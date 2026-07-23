@@ -2372,10 +2372,13 @@ footer {
 
 @media (max-width: 640px) {
   .main-nav span {
-    display: none;
+    display: inline-block !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
   }
   .nav-tab {
-    padding: 0.4rem;
+    padding: 0.4rem 0.6rem !important;
+    gap: 0.35rem !important;
   }
 }
 
@@ -2608,9 +2611,20 @@ footer {
   }
   
   .header-premium-btn,
-  .header-auth-btn,
+  .header-auth-btn {
+    font-size: 0.75rem !important;
+    padding: 0.35rem 0.6rem !important;
+    width: auto !important;
+    height: auto !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 20px !important;
+    gap: 0.25rem !important;
+    white-space: nowrap !important;
+  }
+
   .header-settings-btn {
-    font-size: 0 !important;
     padding: 0 !important;
     width: 2rem !important;
     height: 2rem !important;
@@ -2627,9 +2641,9 @@ footer {
   .header-settings-btn i,
   .header-settings-btn svg {
     margin: 0 !important;
-    width: 1.1rem !important;
-    height: 1.1rem !important;
-    font-size: 1rem !important;
+    width: 0.9rem !important;
+    height: 0.9rem !important;
+    font-size: 0.9rem !important;
     color: #fff !important;
     stroke: #fff !important;
   }
