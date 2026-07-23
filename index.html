@@ -12,7 +12,7 @@
   <!-- FontAwesome Icons (for agency logo) -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- CSS Stylesheet -->
-  <link rel="stylesheet" href="style.css?v=1783262085">
+  <link rel="stylesheet" href="style.css?v=1783262086">
   <!-- Lucide Icons (CDN) -->
   <script src="https://unpkg.com/lucide@latest"></script>
   <!-- Supabase Client JS -->
@@ -42,6 +42,9 @@
       <button class="nav-tab" data-view="planner">
         <i data-lucide="calendar"></i> <span>Weekly Planner</span>
         <span id="planner-badge" class="planner-badge hidden">0</span>
+      </button>
+      <button class="nav-tab" data-view="cookbook">
+        <i data-lucide="book-open"></i> <span>Cookbook</span>
       </button>
     </nav>
 
@@ -643,6 +646,43 @@
         </div>
       </div>
     </div> <!-- End planner-view -->
+
+    <!-- Cookbook View -->
+    <div id="cookbook-view" class="hidden">
+      <div class="glass-panel text-center padding-2" style="margin-bottom: 2rem;">
+        <h2 style="font-family: var(--font-heading); font-weight: 700; margin-bottom: 0.5rem; color: #fff; font-size: 1.8rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+          <i data-lucide="book-open" style="color: var(--accent-color);"></i> My Saved Cookbook
+        </h2>
+        <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Your personal collection of custom recipes. Access them anytime, anywhere.</p>
+      </div>
+
+      <!-- Loading State -->
+      <div id="cookbook-loading" class="text-center padding-3 hidden">
+        <div class="spinner" style="margin: 0 auto 1rem auto;"></div>
+        <p style="color: var(--text-secondary);">Loading your saved recipes...</p>
+      </div>
+
+      <!-- Unauthenticated State -->
+      <div id="cookbook-auth-prompt" class="glass-panel text-center padding-3">
+        <i data-lucide="lock" style="width: 48px; height: 48px; color: var(--gold); margin-bottom: 1rem;"></i>
+        <h3 style="margin-bottom: 0.5rem; color: #fff;">Sign In to view your Cookbook</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 1.5rem; max-width: 400px; margin-left: auto; margin-right: auto;">Keep your recipes saved forever. Log in or create an account to start building your personal cookbook.</p>
+        <button class="btn btn-primary btn-auth-trigger" style="margin: 0 auto;"><i data-lucide="log-in"></i> Sign In Now</button>
+      </div>
+
+      <!-- Empty State -->
+      <div id="cookbook-empty" class="glass-panel text-center padding-3 hidden">
+        <i data-lucide="cooking-pot" style="width: 48px; height: 48px; color: var(--text-muted); margin-bottom: 1rem;"></i>
+        <h3 style="margin-bottom: 0.5rem; color: #fff;">Your Cookbook is empty</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 1.5rem; max-width: 400px; margin-left: auto; margin-right: auto;">You haven't saved any recipes yet. Generate some feasts and click "Save to Cookbook" to add them here!</p>
+        <button class="btn btn-primary btn-generator-trigger" style="margin: 0 auto;"><i data-lucide="cooking-pot"></i> Feast Maker</button>
+      </div>
+
+      <!-- Saved Recipes Grid -->
+      <div id="cookbook-grid" class="hidden" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
+        <!-- Dynamically populated cards will go here -->
+      </div>
+    </div>
   </main>
 
   <!-- Pin Meal Modal -->
@@ -943,6 +983,6 @@
   </footer>
 
   <!-- App JavaScript -->
-  <script src="app.min.js?v=1783262086"></script>
+  <script src="app.min.js?v=1783262087"></script>
 </body>
 </html>
