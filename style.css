@@ -2625,5 +2625,22 @@ footer {
     padding: 0.45rem 0.55rem !important;
     font-size: 0.75rem !important;
   }
+
+  .flowpulse-badge {
+    margin-left: 1.8rem;
+    font-size: 0.48rem;
+  }
+}
+
+.flowpulse-badge {
+  font-size: 0.55rem;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  margin-left: 2.2rem;
+  margin-top: -0.2rem;
+  display: block;
+  opacity: 0.85;
 }
 
