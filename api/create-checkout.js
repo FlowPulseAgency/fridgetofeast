@@ -50,6 +50,7 @@ module.exports = async (req, res) => {
         },
       ],
       mode: 'subscription',
+      allow_promotion_codes: true,
       client_reference_id: user.id,
       customer_email: user.email,
       success_url: `${req.headers.origin || 'https://fridgetofeast.vercel.app'}/?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
