@@ -1781,11 +1781,46 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus {
 /* Footer styling */
 footer {
   margin-top: auto;
-  text-align: center;
-  padding: 2rem;
   border-top: 1px solid var(--border-color);
+  padding: 2.5rem 1rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  background: rgba(10, 10, 18, 0.4);
+}
+
+.footer-logo {
+  font-family: var(--font-heading);
+  font-weight: 800;
+  font-size: 1.15rem;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.footer-logo i {
+  color: var(--accent-color);
+  width: 16px;
+  height: 16px;
+}
+
+.copyright-txt {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.legal-disclaimer {
+  font-size: 0.65rem;
   color: var(--text-muted);
-  font-size: 0.8rem;
+  max-width: 650px;
+  margin: 0.5rem auto 0 auto;
+  line-height: 1.5;
+  opacity: 0.75;
 }
 
 /* Animations */
