@@ -1793,19 +1793,21 @@ footer {
 }
 
 .footer-logo {
-  font-family: var(--font-heading);
+  font-family: 'Outfit', sans-serif;
   font-weight: 800;
-  font-size: 1.15rem;
+  font-size: 1.3rem;
+  margin-bottom: 8px;
   color: #fff;
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.4rem;
 }
 
 .footer-logo i {
-  color: var(--accent-color);
-  width: 16px;
-  height: 16px;
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: inline-block;
 }
 
 .copyright-txt {
