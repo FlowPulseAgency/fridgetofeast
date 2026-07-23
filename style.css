@@ -2517,7 +2517,7 @@ footer {
    ========================================== */
 @media (max-width: 768px) {
   :root {
-    font-size: 12px; /* Zoom out the layout proportionally! */
+    font-size: 13.5px; /* Proportional scale-down for tablets and foldables */
   }
   
   header {
@@ -2554,7 +2554,7 @@ footer {
 
 @media (max-width: 480px) {
   :root {
-    font-size: 11px; /* Zoom out even more for small phones! */
+    font-size: 12.5px; /* Larger base font size for senior readability (Option B) */
   }
   
   .logo {
@@ -2599,8 +2599,31 @@ footer {
     padding: 0 0.75rem 1.5rem 0.75rem;
   }
   
+  /* Shrink spacing and padding on mobile to compensate for larger readable text */
   .glass-panel {
-    padding: 1rem;
+    padding: 0.85rem !important;
+  }
+  
+  .app-layout {
+    gap: 0.85rem !important;
+  }
+
+  .btn {
+    padding: 0.65rem 0.85rem !important;
+  }
+
+  .form-group {
+    gap: 0.25rem !important;
+  }
+  
+  .input-tabs {
+    gap: 0.35rem !important;
+    margin-bottom: 0.75rem !important;
+  }
+  
+  .tab-btn {
+    padding: 0.45rem 0.55rem !important;
+    font-size: 0.75rem !important;
   }
 }
 
