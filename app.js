@@ -1,0 +1,3454 @@
+/* ==========================================
+   FRIDGE-TO-FEAST FRONTEND CLIENT LOGIC
+   ========================================== */
+
+window.onerror = function(message, source, lineno, colno, error) {
+  alert("CRITICAL JS ERROR:\n" + message + "\nLine: " + lineno + ":" + colno + "\nSource: " + source);
+  console.error("Global captured error:", message, "at", source, lineno, colno, error);
+  return false;
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+  // Pre-load speech synthesis voices so they are ready when voice assistant starts
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.getVoices();
+    };
+  }
+
+  // Initialize Lucide Icons
+  lucide.createIcons();
+
+  // State Management
+  const state = {
+    isServerMode: false,
+    serverUrl: '',
+    get isPremium() {
+      if (this._isPremiumOverride !== undefined) return this._isPremiumOverride;
+      if (this.apiKey && this.apiKey.trim() !== '') return true;
+      if (this.profile && this.profile.is_premium === true) return true;
+      return localStorage.getItem('is_premium') === 'true';
+    },
+    set isPremium(val) {
+      this._isPremiumOverride = val;
+    },
+    apiKey: localStorage.getItem('gemini_api_key') || '',
+    ingredients: {}, // Maps name -> { name, state: 'fresh' | 'expiring' | 'urgent' }
+    seasonings: JSON.parse(localStorage.getItem('feasts_seasonings') || '{"staples":[],"custom":[]}'),
+    planner: JSON.parse(localStorage.getItem('feasts_planner') || '{}'),
+    tempRecipeToPin: null,
+    stats: JSON.parse(localStorage.getItem('feasts_stats') || '{"moneySaved":0,"weightRescued":0,"co2Prevented":0,"mealsCooked":0,"streak":0,"lastCookedDate":""}'),
+    activeTab: 'upload',
+    imageUploadedBase64: null,
+    imageUploadedMime: null,
+    cameraStream: null,
+    generatedRecipes: [],
+    activeTimers: {}, // Indexed by step ID
+    currentRecipeViewed: null,
+    currentStepViewedIdx: 0,
+    voiceAssistantActive: false,
+    speechRecognition: null,
+    swapTargetIngredient: null,
+    loadingTips: [
+      "Simmering your options...",
+      "Asking our AI chef for recommendations...",
+      "Checking the virtual pantry...",
+      "Garnishing the plates...",
+      "Recalculating swaps...",
+      "Consulting Michelin presentation guides..."
+    ],
+    loadingTipInterval: null
+  };
+
+  // --- Supabase Authentication & Profile Management ---
+  let supabase = null;
+  state.user = null;
+  state.profile = null;
+  state._isPremiumOverride = undefined;
+
+  async function initSupabase(url = localStorage.getItem('supabase_url'), anonKey = localStorage.getItem('supabase_anon_key')) {
+    if (!url || !anonKey) {
+      try {
+        const configPath = getApiPath('auth-config');
+        const res = await fetch(configPath);
+        if (res.ok) {
+          const config = await res.json();
+          if (config.supabaseUrl && config.supabaseAnonKey) {
+            url = config.supabaseUrl;
+            anonKey = config.supabaseAnonKey;
+            localStorage.setItem('supabase_url', url);
+            localStorage.setItem('supabase_anon_key', anonKey);
+          }
+        }
+      } catch (err) {
+        console.warn("Could not fetch Supabase configuration from server:", err);
+      }
+    }
+
+    if (!url || !anonKey) {
+      console.warn("Supabase URL and Anon Key not configured in Developer Settings.");
+      updateUserUI();
+      return;
+    }
+    try {
+      supabase = window.supabase.createClient(url, anonKey);
+      console.log("Supabase client initialized.");
+
+      // Check active session
+      const { data: { session } } = await supabase.auth.getSession();
+      handleSession(session);
+
+      // Listen for auth events
+      supabase.auth.onAuthStateChange((event, session) => {
+        handleSession(session);
+      });
+    } catch (err) {
+      console.error("Error initializing Supabase client:", err);
+      updateUserUI();
+    }
+  }
+
+  async function handleSession(session) {
+    if (session) {
+      state.user = session.user;
+      await fetchUserProfile();
+    } else {
+      state.user = null;
+      state.profile = null;
+      updateUserUI();
+    }
+  }
+
+  async function fetchUserProfile() {
+    if (!state.user || !supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', state.user.id)
+        .single();
+        
+      if (error) {
+        console.error("Error fetching user profile, attempting to create one:", error);
+        // Fallback: insert profile if trigger failed
+        const { data: newProfile, error: insertError } = await supabase
+          .from('profiles')
+          .insert([{ id: state.user.id, is_premium: false }])
+          .select()
+          .single();
+        if (!insertError) {
+          state.profile = newProfile;
+        }
+      } else {
+        state.profile = data;
+      }
+    } catch (err) {
+      console.error("Failed to load profile:", err);
+    }
+    updateUserUI();
+  }
+
+  function updateUserUI() {
+    const loginBtn = document.getElementById('auth-login-btn');
+    const profileDropdown = document.getElementById('user-profile-dropdown');
+    const displayName = document.getElementById('user-display-name');
+    const dropdownEmail = document.getElementById('dropdown-email');
+    const dropdownStatus = document.getElementById('dropdown-status');
+    const premiumBtn = document.getElementById('premium-header-btn');
+
+    if (state.user) {
+      if (loginBtn) loginBtn.classList.add('hidden');
+      if (profileDropdown) profileDropdown.classList.remove('hidden');
+      
+      const email = state.user.email;
+      const shortName = email.split('@')[0];
+      if (displayName) displayName.textContent = shortName;
+      if (dropdownEmail) dropdownEmail.textContent = email;
+      
+      const isPremium = state.isPremium;
+      if (dropdownStatus) {
+        dropdownStatus.textContent = isPremium ? "Premium" : "Free";
+        if (isPremium) {
+          dropdownStatus.classList.add('premium');
+        } else {
+          dropdownStatus.classList.remove('premium');
+        }
+      }
+
+      if (premiumBtn) {
+        if (isPremium) {
+          premiumBtn.classList.add('hidden');
+        } else {
+          premiumBtn.classList.remove('hidden');
+        }
+      }
+    } else {
+      if (loginBtn) loginBtn.classList.remove('hidden');
+      if (profileDropdown) profileDropdown.classList.add('hidden');
+      if (premiumBtn) premiumBtn.classList.remove('hidden');
+    }
+
+    const visionOverlay = document.getElementById('vision-locked-overlay');
+    if (visionOverlay) {
+      if (state.isPremium || (state.activeTab !== 'camera' && state.activeTab !== 'upload')) {
+        visionOverlay.classList.add('hidden');
+      } else {
+        visionOverlay.classList.remove('hidden');
+      }
+    }
+
+    lucide.createIcons();
+  }
+
+  async function getAuthHeaders(customHeaders = {}) {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...customHeaders
+    };
+    if (supabase) {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      }
+    }
+    return headers;
+  }
+
+  // --- Auth UI Event Handlers ---
+  const authModal = document.getElementById('auth-modal');
+  const authLoginBtn = document.getElementById('auth-login-btn');
+  const closeAuthModal = document.getElementById('close-auth-modal');
+  const authOverlayBg = document.getElementById('auth-overlay-bg');
+  const authForm = document.getElementById('auth-form');
+  const authEmailInput = document.getElementById('auth-email');
+  const authPasswordInput = document.getElementById('auth-password');
+  const authErrorMsg = document.getElementById('auth-error-message');
+  const authToggleBtn = document.getElementById('auth-toggle-btn');
+  const authToggleText = document.getElementById('auth-toggle-text');
+  const authModalTitle = document.getElementById('auth-modal-title');
+  const authSubmitBtn = document.getElementById('auth-submit-btn');
+
+  let isSignUpMode = false;
+
+  function openAuthModal() {
+    authModal.classList.remove('hidden');
+    authEmailInput.value = '';
+    authPasswordInput.value = '';
+    authErrorMsg.classList.add('hidden');
+    authEmailInput.focus();
+  }
+
+  function closeAuth() {
+    authModal.classList.add('hidden');
+  }
+
+  if (authLoginBtn) authLoginBtn.addEventListener('click', openAuthModal);
+  if (closeAuthModal) closeAuthModal.addEventListener('click', closeAuth);
+  if (authOverlayBg) authOverlayBg.addEventListener('click', closeAuth);
+
+  if (authToggleBtn) {
+    authToggleBtn.addEventListener('click', () => {
+      isSignUpMode = !isSignUpMode;
+      if (isSignUpMode) {
+        authModalTitle.textContent = "Create Your Account";
+        authSubmitBtn.textContent = "Sign Up";
+        authToggleText.textContent = "Already have an account?";
+        authToggleBtn.textContent = "Sign In";
+      } else {
+        authModalTitle.textContent = "Sign In to Feast";
+        authSubmitBtn.textContent = "Sign In";
+        authToggleText.textContent = "Don't have an account?";
+        authToggleBtn.textContent = "Sign Up";
+      }
+    });
+  }
+
+  if (authForm) {
+    authForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      authErrorMsg.classList.add('hidden');
+      const email = authEmailInput.value.trim();
+      const password = authPasswordInput.value;
+
+      if (!supabase) {
+        alert("Please configure Supabase connection details in API Settings (top right gear icon) first!");
+        return;
+      }
+
+      authSubmitBtn.disabled = true;
+      authSubmitBtn.textContent = isSignUpMode ? "Signing Up..." : "Signing In...";
+
+      try {
+        let authResult;
+        if (isSignUpMode) {
+          authResult = await supabase.auth.signUp({ email, password });
+        } else {
+          authResult = await supabase.auth.signInWithPassword({ email, password });
+        }
+
+        if (authResult.error) {
+          authErrorMsg.textContent = authResult.error.message;
+          authErrorMsg.classList.remove('hidden');
+        } else {
+          closeAuth();
+          if (isSignUpMode) {
+            alert("Registration successful! Please check your email for a verification link.");
+          }
+        }
+      } catch (err) {
+        authErrorMsg.textContent = "An unexpected error occurred. Please try again.";
+        authErrorMsg.classList.remove('hidden');
+      } finally {
+        authSubmitBtn.disabled = false;
+        authSubmitBtn.textContent = isSignUpMode ? "Sign Up" : "Sign In";
+      }
+    });
+  }
+
+  const userProfileBtn = document.getElementById('user-profile-btn');
+  const userProfileDropdown = document.getElementById('user-profile-dropdown');
+  const authLogoutBtn = document.getElementById('auth-logout-btn');
+  const dropdownUpgradeBtn = document.getElementById('dropdown-upgrade-btn');
+
+  if (userProfileBtn) {
+    userProfileBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      userProfileDropdown.classList.toggle('active');
+    });
+  }
+
+  document.addEventListener('click', () => {
+    if (userProfileDropdown) userProfileDropdown.classList.remove('active');
+  });
+
+  if (authLogoutBtn) {
+    authLogoutBtn.addEventListener('click', async () => {
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    });
+  }
+
+  if (dropdownUpgradeBtn) {
+    dropdownUpgradeBtn.addEventListener('click', () => {
+      paywallModal.classList.remove('hidden');
+    });
+  }
+
+  // DOM Elements
+  const settingsBtn = document.getElementById('settings-btn');
+  const settingsModal = document.getElementById('settings-modal');
+  const settingsOverlay = document.getElementById('settings-overlay');
+  const closeSettingsModal = document.getElementById('close-settings-modal');
+  const cancelSettings = document.getElementById('cancel-settings');
+  const saveSettingsBtn = document.getElementById('save-settings');
+  const apiKeyInput = document.getElementById('api-key-input');
+  const toggleKeyVisibility = document.getElementById('toggle-key-visibility');
+  const apiKeyBanner = document.getElementById('api-key-banner');
+  const setupKeyBtn = document.getElementById('setup-key-btn');
+
+  // Premium & Paywall Elements
+  const premiumHeaderBtn = document.getElementById('premium-header-btn');
+  const paywallModal = document.getElementById('paywall-modal');
+  const paywallOverlay = document.getElementById('paywall-overlay');
+  const closePaywallModal = document.getElementById('close-paywall-modal');
+  const paywallCheckoutBtn = document.getElementById('paywall-checkout-btn');
+  const premiumSuccessBanner = document.getElementById('premium-success-banner');
+  const dismissSuccessBtn = document.getElementById('dismiss-success-btn');
+  const visionLockedOverlay = document.getElementById('vision-locked-overlay');
+  const unlockVisionBtn = document.getElementById('unlock-vision-btn');
+  const freeLimitStatus = document.getElementById('free-limit-status');
+  const limitRemainingSpan = document.getElementById('limit-remaining');
+
+  // Input Tabs & Panes
+  const tabButtons = document.querySelectorAll('.tab-btn');
+  const tabPanes = document.querySelectorAll('.tab-pane');
+
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  const uploadPreviewContainer = document.getElementById('upload-preview-container');
+  const uploadPreview = document.getElementById('upload-preview');
+  const clearUploadBtn = document.getElementById('clear-upload-btn');
+
+  const cameraFeed = document.getElementById('camera-feed');
+  const cameraPlaceholder = document.getElementById('camera-placeholder');
+  const startCameraBtn = document.getElementById('start-camera-btn');
+  const cameraCanvas = document.getElementById('camera-canvas');
+  const cameraPreviewContainer = document.getElementById('camera-preview-container');
+  const cameraPreview = document.getElementById('camera-preview');
+  const cameraControls = document.getElementById('camera-controls');
+  const captureBtn = document.getElementById('capture-btn');
+  const retakeBtn = document.getElementById('retake-btn');
+
+  const manualInput = document.getElementById('manual-input');
+  const addManualBtn = document.getElementById('add-manual-btn');
+  const ingredientsList = document.getElementById('ingredients-list');
+  const emptyIngredientsText = document.getElementById('empty-ingredients-text');
+  const ingredientCount = document.getElementById('ingredient-count');
+
+  const analyzeImgBtn = document.getElementById('analyze-img-btn');
+  const generateRecipesBtn = document.getElementById('generate-recipes-btn');
+
+  const loadingScreen = document.getElementById('loading-screen');
+  const loadingTitle = document.getElementById('loading-title');
+  const loadingTip = document.getElementById('loading-tip');
+
+  const resultsSection = document.getElementById('results-section');
+  const recipesGrid = document.getElementById('recipes-grid');
+
+  const recipeModal = document.getElementById('recipe-modal');
+  const closeRecipeModal = document.getElementById('close-recipe-modal');
+  const modalOverlay = document.getElementById('modal-overlay');
+  const modalBodyContent = document.getElementById('modal-body-content');
+
+  // Shopping List Elements
+  const shoppingModal = document.getElementById('shopping-modal');
+  const shoppingOverlay = document.getElementById('shopping-overlay');
+  const closeShoppingModal = document.getElementById('close-shopping-modal');
+  const shoppingListCategories = document.getElementById('shopping-list-categories');
+  const copyShoppingBtn = document.getElementById('copy-shopping-btn');
+  const closeShoppingBtnAction = document.getElementById('close-shopping-btn-action');
+
+  // Savings Tracker Elements
+  const savingsValue = document.getElementById('savings-value');
+
+  // Plating Guide Elements
+  const platingModal = document.getElementById('plating-modal');
+  const platingOverlayBg = document.getElementById('plating-overlay-bg');
+  const closePlatingModal = document.getElementById('close-plating-modal');
+  const platingBodyContent = document.getElementById('plating-body-content');
+
+  // Swap Modal Elements
+  const swapModal = document.getElementById('swap-modal');
+  const swapOverlayBg = document.getElementById('swap-overlay-bg');
+  const closeSwapModal = document.getElementById('close-swap-modal');
+  const cancelSwap = document.getElementById('cancel-swap');
+  const confirmSwap = document.getElementById('confirm-swap');
+  const swapInput = document.getElementById('swap-input');
+  const swapTargetName = document.getElementById('swap-target-name');
+
+  // Spice Cabinet Elements
+  const spiceToggleBtn = document.getElementById('spice-toggle-btn');
+  const spiceToggleArrow = document.getElementById('spice-toggle-arrow');
+  const spiceCabinetContent = document.getElementById('spice-cabinet-content');
+  const customSpiceInput = document.getElementById('custom-spice-input');
+  const addCustomSpiceBtn = document.getElementById('add-custom-spice-btn');
+  const customSpicesList = document.getElementById('custom-spices-list');
+
+  // View Switcher & Planner Elements
+  const generatorView = document.getElementById('generator-view');
+  const plannerView = document.getElementById('planner-view');
+  const navTabs = document.querySelectorAll('.nav-tab');
+  const plannerBadge = document.getElementById('planner-badge');
+  const pinMealModal = document.getElementById('pin-meal-modal');
+  const pinDaySelect = document.getElementById('pin-day-select');
+  const pinSlotSelect = document.getElementById('pin-slot-select');
+  const confirmPinBtn = document.getElementById('confirm-pin-btn');
+  const cancelPinBtn = document.getElementById('cancel-pin-btn');
+  const closePinModalBtn = document.getElementById('close-pin-modal');
+  const socialCardModal = document.getElementById('social-card-modal');
+  const socialOverlayBg = document.getElementById('social-overlay-bg');
+  const closeSocialModalBtn = document.getElementById('close-social-modal');
+  const downloadSocialCardBtn = document.getElementById('download-social-card-btn');
+  const plannerShoppingListBtn = document.getElementById('planner-shopping-list-btn');
+  const plannerShareBtn = document.getElementById('planner-share-btn');
+  const statMoneyRing = document.getElementById('stat-money-ring');
+  const statMoneyValue = document.getElementById('stat-money-value');
+  const statWeightRing = document.getElementById('stat-weight-ring');
+  const statWeightValue = document.getElementById('stat-weight-value');
+  const statCo2Ring = document.getElementById('stat-co2-ring');
+  const statCo2Value = document.getElementById('stat-co2-value');
+  const milestoneBadgeIcon = document.getElementById('milestone-badge-icon');
+  const milestoneBadgeTitle = document.getElementById('milestone-badge-title');
+  const milestoneBadgeDesc = document.getElementById('milestone-badge-desc');
+  const statStreakValue = document.getElementById('stat-streak-value');
+  const forecastBodyContent = document.getElementById('forecast-body-content');
+  const smartSwapsContainer = document.getElementById('smart-swaps-container');
+  const smartSwapsList = document.getElementById('smart-swaps-list');
+
+  // Initialize App
+  init();
+
+  async function init() {
+    await checkServerHealth();
+    handleStripeCallback();
+    updatePremiumUI();
+    updateSavingsDisplay();
+    updateApiKeyUI();
+    renderIngredients();
+    renderSpiceCabinet();
+    renderPlannerGrid();
+    updateDashboardUI();
+    setupTabLocks();
+    checkSharedPlanImport();
+  }
+
+  // --- Server Mode Health Check ---
+  async function checkServerHealth() {
+    if (window.location.hostname.includes('netlify.app') || window.location.hostname.includes('vercel.app') || window.location.pathname.startsWith('/.netlify/')) {
+      state.isServerMode = true;
+      console.log("Connected to secure hosted backend.");
+      return;
+    }
+
+    try {
+      const response = await fetch(`${state.serverUrl}/api/health`);
+      if (response.ok) {
+        state.isServerMode = true;
+        console.log("Connected to secure backend proxy.");
+      }
+    } catch (err) {
+      state.isServerMode = false;
+      console.log("No backend server detected. Running in client-side Local Mode.");
+    }
+  }
+
+  // --- Dynamic API Path Router ---
+  function getApiPath(endpoint) {
+    if (window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/')) {
+      return `/.netlify/functions/${endpoint}`;
+    }
+    return `/api/${endpoint}`;
+  }
+
+  // --- Handle Stripe Success Callbacks ---
+  async function handleStripeCallback() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const hasSuccess = urlParams.get('success') === 'true';
+    const sessionId = urlParams.get('session_id');
+
+    if (hasSuccess) {
+      if (sessionId && state.isServerMode) {
+        try {
+          const res = await fetch(`/api/verify-session?session_id=${sessionId}`);
+          const verification = await res.json();
+          if (verification.success) {
+            activatePremium();
+          }
+        } catch (err) {
+          console.error("Subscription verification failed:", err);
+        }
+      } else {
+        activatePremium();
+      }
+    }
+  }
+
+  function activatePremium() {
+    state.isPremium = true;
+    localStorage.setItem('is_premium', 'true');
+    premiumSuccessBanner.classList.remove('hidden');
+    
+    const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+    window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+    
+    updatePremiumUI();
+    setupTabLocks();
+  }
+
+  dismissSuccessBtn.addEventListener('click', () => {
+    premiumSuccessBanner.classList.add('hidden');
+  });
+
+  // --- Premium UI & Lock Configuration ---
+  function updatePremiumUI() {
+    if (state.isPremium) {
+      premiumHeaderBtn.classList.add('hidden');
+      visionLockedOverlay.classList.add('hidden');
+      freeLimitStatus.classList.add('hidden');
+      document.querySelectorAll('.tab-lock-icon').forEach(icon => icon.classList.add('hidden'));
+    } else {
+      premiumHeaderBtn.classList.remove('hidden');
+      updateDailyLimitsUI();
+    }
+  }
+
+  function setupTabLocks() {
+    if (!state.isPremium) {
+      document.querySelectorAll('.tab-btn[data-tab="upload"] .tab-lock-icon').forEach(i => i.classList.remove('hidden'));
+      document.querySelectorAll('.tab-btn[data-tab="camera"] .tab-lock-icon').forEach(i => i.classList.remove('hidden'));
+      if (state.activeTab !== 'manual') {
+        switchTab('manual');
+      }
+    } else {
+      document.querySelectorAll('.tab-lock-icon').forEach(i => i.classList.add('hidden'));
+      switchTab('upload');
+    }
+  }
+
+  function switchTab(tabName) {
+    state.activeTab = tabName;
+    tabButtons.forEach(btn => {
+      btn.classList.remove('active');
+      if (btn.getAttribute('data-tab') === tabName) btn.classList.add('active');
+    });
+
+    tabPanes.forEach(pane => {
+      pane.classList.remove('active');
+      if (pane.id === `pane-${tabName}`) pane.classList.add('active');
+    });
+
+    if (tabName !== 'camera') {
+      stopCamera();
+    }
+
+    if (!state.isPremium && (tabName === 'camera' || tabName === 'upload')) {
+      visionLockedOverlay.classList.remove('hidden');
+    } else {
+      visionLockedOverlay.classList.add('hidden');
+    }
+
+    updateActionButtonsVisibility();
+  }
+
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tabName = btn.getAttribute('data-tab');
+      switchTab(tabName);
+    });
+  });
+
+  // --- Paywall Actions ---
+  function openPaywall() {
+    paywallModal.classList.remove('hidden');
+  }
+
+  function closePaywall() {
+    paywallModal.classList.add('hidden');
+  }
+
+  premiumHeaderBtn.addEventListener('click', openPaywall);
+  unlockVisionBtn.addEventListener('click', openPaywall);
+  closePaywallModal.addEventListener('click', closePaywall);
+  paywallOverlay.addEventListener('click', closePaywall);
+
+  paywallCheckoutBtn.addEventListener('click', async () => {
+    if (state.user && supabase) {
+      paywallCheckoutBtn.disabled = true;
+      paywallCheckoutBtn.textContent = "Processing Upgrade...";
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .update({ is_premium: true })
+          .eq('id', state.user.id)
+          .select()
+          .single();
+        if (error) {
+          alert("Error upgrading profile: " + error.message);
+        } else {
+          state.profile = data;
+          updateUserUI();
+          activatePremium();
+          closePaywall();
+          alert("🎉 Success! Your account has been upgraded to Premium.");
+        }
+      } catch (err) {
+        console.error("Upgrade request failed:", err);
+      } finally {
+        paywallCheckoutBtn.disabled = false;
+        paywallCheckoutBtn.innerHTML = `<i data-lucide="party-popper"></i> Upgrade to Premium Now`;
+        lucide.createIcons();
+      }
+    } else {
+      alert("Please Sign In first to upgrade your account!");
+      closePaywall();
+      openAuthModal();
+    }
+  });
+
+  // --- API Key & Local Mode Settings ---
+  function updateApiKeyUI() {
+    settingsBtn.classList.remove('hidden');
+    
+    if (state.isServerMode) {
+      apiKeyBanner.classList.add('hidden');
+    } else {
+      if (state.apiKey) {
+        apiKeyBanner.classList.add('hidden');
+        apiKeyInput.value = state.apiKey;
+      } else {
+        apiKeyBanner.classList.remove('hidden');
+      }
+    }
+  }
+
+  function openSettings() {
+    apiKeyInput.value = state.apiKey || '';
+    document.getElementById('supabase-url-input').value = localStorage.getItem('supabase_url') || '';
+    document.getElementById('supabase-anon-key-input').value = localStorage.getItem('supabase_anon_key') || '';
+    settingsModal.classList.remove('hidden');
+    apiKeyInput.focus();
+  }
+
+  function closeSettings() {
+    settingsModal.classList.add('hidden');
+  }
+
+  settingsBtn.addEventListener('click', openSettings);
+  setupKeyBtn.addEventListener('click', openSettings);
+  closeSettingsModal.addEventListener('click', closeSettings);
+  settingsOverlay.addEventListener('click', closeSettings);
+  cancelSettings.addEventListener('click', closeSettings);
+
+  saveSettingsBtn.addEventListener('click', () => {
+    const key = apiKeyInput.value.trim();
+    const supUrl = document.getElementById('supabase-url-input').value.trim();
+    const supKey = document.getElementById('supabase-anon-key-input').value.trim();
+
+    if (key) {
+      state.apiKey = key;
+      localStorage.setItem('gemini_api_key', key);
+    } else {
+      state.apiKey = '';
+      localStorage.removeItem('gemini_api_key');
+    }
+
+    localStorage.setItem('supabase_url', supUrl);
+    localStorage.setItem('supabase_anon_key', supKey);
+
+    if (supUrl && supKey) {
+      initSupabase(supUrl, supKey);
+    }
+
+    updateApiKeyUI();
+    updateUserUI(); // refresh UI locks
+    closeSettings();
+  });
+
+  toggleKeyVisibility.addEventListener('click', () => {
+    const icon = toggleKeyVisibility.querySelector('i');
+    if (apiKeyInput.type === 'password') {
+      apiKeyInput.type = 'text';
+      icon.setAttribute('data-lucide', 'eye-off');
+    } else {
+      apiKeyInput.type = 'password';
+      icon.setAttribute('data-lucide', 'eye');
+    }
+    lucide.createIcons();
+  });
+
+  // --- Daily Limits Tracker ---
+  function getDailyGenerations() {
+    const today = new Date().toISOString().split('T')[0];
+    try {
+      const limits = JSON.parse(localStorage.getItem('daily_limits') || '{}');
+      if (limits && limits.date === today) {
+        return limits;
+      }
+    } catch (e) {
+      console.warn("Failed to parse daily limits, resetting:", e);
+    }
+    return { date: today, count: 0 };
+  }
+
+  function incrementDailyGenerations() {
+    const limits = getDailyGenerations();
+    limits.count += 1;
+    localStorage.setItem('daily_limits', JSON.stringify(limits));
+    updateDailyLimitsUI();
+  }
+
+  function updateDailyLimitsUI() {
+    if (state.isPremium) return;
+    const limits = getDailyGenerations();
+    const remaining = Math.max(0, 3 - limits.count);
+    freeLimitStatus.classList.remove('hidden');
+    limitRemainingSpan.textContent = remaining;
+  }
+
+  function isGenerationAllowed() {
+    if (state.isPremium) return true;
+    const limits = getDailyGenerations();
+    return limits.count < 3;
+  }
+
+  // --- Food Waste Savings Manager ---
+  function updateSavingsDisplay() {
+    let savings = parseFloat(localStorage.getItem('food_waste_savings') || '0.00');
+    if (isNaN(savings)) {
+      savings = 0.00;
+    }
+    savingsValue.textContent = `$${savings.toFixed(2)}`;
+  }
+
+  function recordSavings(count) {
+    const perIngredientValue = 1.50;
+    const sessionSavings = count * perIngredientValue;
+    const currentTotal = parseFloat(localStorage.getItem('food_waste_savings') || '0.00');
+    localStorage.setItem('food_waste_savings', (currentTotal + sessionSavings).toString());
+    updateSavingsDisplay();
+    triggerBeep(600, 100);
+    setTimeout(() => triggerBeep(800, 150), 120);
+  }
+
+  // --- Upload Functionality ---
+  ['dragenter', 'dragover'].forEach(eventName => {
+    dropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    }, false);
+  });
+
+  ['dragleave', 'drop'].forEach(eventName => {
+    dropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+    }, false);
+  });
+
+  dropzone.addEventListener('drop', (e) => {
+    const dt = e.dataTransfer;
+    const files = dt.files;
+    if (files.length) {
+      handleImageFile(files[0]);
+    }
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    if (fileInput.files.length) {
+      handleImageFile(fileInput.files[0]);
+    }
+  });
+
+  function handleImageFile(file) {
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload an image file.');
+      return;
+    }
+    state.imageUploadedMime = file.type;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target.result;
+      state.imageUploadedBase64 = dataUrl.split(',')[1];
+      uploadPreview.src = dataUrl;
+      dropzone.classList.add('hidden');
+      uploadPreviewContainer.classList.remove('hidden');
+      updateActionButtonsVisibility();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  clearUploadBtn.addEventListener('click', () => {
+    fileInput.value = '';
+    state.imageUploadedBase64 = null;
+    state.imageUploadedMime = null;
+    uploadPreview.src = '';
+    uploadPreviewContainer.classList.add('hidden');
+    dropzone.classList.remove('hidden');
+    updateActionButtonsVisibility();
+  });
+
+  function updateActionButtonsVisibility() {
+    if (!state.isPremium) {
+      analyzeImgBtn.classList.add('hidden');
+      return;
+    }
+    if (state.activeTab === 'upload' && state.imageUploadedBase64) {
+      analyzeImgBtn.classList.remove('hidden');
+    } else if (state.activeTab === 'camera' && state.imageUploadedBase64) {
+      analyzeImgBtn.classList.remove('hidden');
+    } else {
+      analyzeImgBtn.classList.add('hidden');
+    }
+  }
+
+  // --- Camera Functionality ---
+  async function startCamera() {
+    try {
+      state.cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      });
+      cameraFeed.srcObject = state.cameraStream;
+      cameraFeed.classList.remove('hidden');
+      cameraPlaceholder.classList.add('hidden');
+      cameraControls.classList.remove('hidden');
+      captureBtn.classList.remove('hidden');
+      retakeBtn.classList.add('hidden');
+      cameraPreviewContainer.classList.add('hidden');
+    } catch (err) {
+      console.error("Camera access error:", err);
+      alert("Could not access camera.");
+    }
+  }
+
+  function stopCamera() {
+    if (state.cameraStream) {
+      state.cameraStream.getTracks().forEach(track => track.stop());
+      state.cameraStream = null;
+    }
+    cameraFeed.classList.add('hidden');
+    cameraFeed.srcObject = null;
+    cameraPlaceholder.classList.remove('hidden');
+    cameraControls.classList.add('hidden');
+  }
+
+  startCameraBtn.addEventListener('click', startCamera);
+
+  captureBtn.addEventListener('click', () => {
+    if (!state.cameraStream) return;
+    const width = cameraFeed.videoWidth;
+    const height = cameraFeed.videoHeight;
+    cameraCanvas.width = width;
+    cameraCanvas.height = height;
+    
+    const ctx = cameraCanvas.getContext('2d');
+    ctx.drawImage(cameraFeed, 0, 0, width, height);
+    
+    const dataUrl = cameraCanvas.toDataURL('image/jpeg');
+    state.imageUploadedBase64 = dataUrl.split(',')[1];
+    state.imageUploadedMime = 'image/jpeg';
+
+    cameraPreview.src = dataUrl;
+    cameraPreviewContainer.classList.remove('hidden');
+    cameraFeed.classList.add('hidden');
+
+    captureBtn.classList.add('hidden');
+    retakeBtn.classList.remove('hidden');
+    stopCamera();
+    updateActionButtonsVisibility();
+  });
+
+  retakeBtn.addEventListener('click', () => {
+    state.imageUploadedBase64 = null;
+    state.imageUploadedMime = null;
+    updateActionButtonsVisibility();
+    startCamera();
+  });
+
+  // --- Manual Ingredient List & Tag Expiration Cycle ---
+  function addManualIngredients() {
+    const value = manualInput.value.trim();
+    if (!value) return;
+
+    const items = value.split(',').map(i => i.trim().toLowerCase()).filter(i => i.length > 0);
+    items.forEach(item => {
+      if (!state.ingredients[item]) {
+        state.ingredients[item] = { name: item, state: 'fresh' };
+      }
+    });
+
+    manualInput.value = '';
+    renderIngredients();
+  }
+
+  addManualBtn.addEventListener('click', addManualIngredients);
+  manualInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') addManualIngredients();
+  });
+
+  function renderIngredients() {
+    ingredientsList.innerHTML = '';
+    const keys = Object.keys(state.ingredients);
+    
+    if (keys.length === 0) {
+      ingredientsList.appendChild(emptyIngredientsText);
+      generateRecipesBtn.disabled = true;
+    } else {
+      generateRecipesBtn.disabled = false;
+      keys.forEach(key => {
+        const item = state.ingredients[key];
+        const tag = document.createElement('div');
+        tag.className = `tag ${item.state}`;
+        tag.setAttribute('data-item', item.name);
+        
+        let indicator = '';
+        if (item.state === 'expiring') indicator = ' 🟡';
+        if (item.state === 'urgent') indicator = ' 🔴';
+        
+        tag.innerHTML = `
+          <span class="tag-label cursor-pointer">${item.name}${indicator}</span>
+          <button class="tag-remove" data-item="${item.name}"><i data-lucide="x"></i></button>
+        `;
+        ingredientsList.appendChild(tag);
+      });
+      lucide.createIcons();
+    }
+
+    ingredientCount.textContent = keys.length;
+  }
+
+  ingredientsList.addEventListener('click', (e) => {
+    const labelSpan = e.target.closest('.tag-label');
+    const removeBtn = e.target.closest('.tag-remove');
+    
+    if (labelSpan) {
+      const tagDiv = labelSpan.closest('.tag');
+      const name = tagDiv.getAttribute('data-item');
+      cycleTagState(name);
+    } else if (removeBtn) {
+      const name = removeBtn.getAttribute('data-item');
+      delete state.ingredients[name];
+      renderIngredients();
+    }
+  });
+
+  function cycleTagState(name) {
+    const item = state.ingredients[name];
+    if (item.state === 'fresh') item.state = 'expiring';
+    else if (item.state === 'expiring') item.state = 'urgent';
+    else item.state = 'fresh';
+    
+    renderIngredients();
+  }
+
+  // --- Spice Cabinet Managers ---
+  function renderSpiceCabinet() {
+    const checkboxes = document.querySelectorAll('input[name="spice"]');
+    checkboxes.forEach(cb => {
+      cb.checked = state.seasonings.staples.includes(cb.value);
+    });
+
+    customSpicesList.innerHTML = '';
+    state.seasonings.custom.forEach(item => {
+      const tag = document.createElement('div');
+      tag.className = 'custom-spice-tag';
+      tag.innerHTML = `
+        <span>${item}</span>
+        <button class="custom-spice-remove" data-item="${item}"><i data-lucide="x"></i></button>
+      `;
+      customSpicesList.appendChild(tag);
+    });
+    lucide.createIcons();
+  }
+
+  function saveSeasonings() {
+    localStorage.setItem('feasts_seasonings', JSON.stringify(state.seasonings));
+  }
+
+  function addCustomSpice() {
+    const value = customSpiceInput.value.trim().toLowerCase();
+    if (!value) return;
+
+    if (!state.seasonings.custom.includes(value) && !state.seasonings.staples.includes(value)) {
+      state.seasonings.custom.push(value);
+      saveSeasonings();
+      renderSpiceCabinet();
+    }
+    customSpiceInput.value = '';
+  }
+
+  function removeCustomSpice(name) {
+    state.seasonings.custom = state.seasonings.custom.filter(item => item !== name);
+    saveSeasonings();
+    renderSpiceCabinet();
+  }
+
+  // Attach Spice Cabinet listeners
+  if (spiceToggleBtn) {
+    spiceToggleBtn.addEventListener('click', () => {
+      spiceCabinetContent.classList.toggle('hidden');
+      spiceToggleBtn.classList.toggle('spice-toggle-active');
+    });
+  }
+
+  document.addEventListener('change', (e) => {
+    if (e.target && e.target.name === 'spice') {
+      const value = e.target.value;
+      if (e.target.checked) {
+        if (!state.seasonings.staples.includes(value)) {
+          state.seasonings.staples.push(value);
+        }
+      } else {
+        state.seasonings.staples = state.seasonings.staples.filter(item => item !== value);
+      }
+      saveSeasonings();
+    }
+  });
+
+  if (addCustomSpiceBtn) {
+    addCustomSpiceBtn.addEventListener('click', addCustomSpice);
+  }
+  if (customSpiceInput) {
+    customSpiceInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') addCustomSpice();
+    });
+  }
+
+  if (customSpicesList) {
+    customSpicesList.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('.custom-spice-remove');
+      if (removeBtn) {
+        const item = removeBtn.getAttribute('data-item');
+        removeCustomSpice(item);
+      }
+    });
+  }
+
+  // --- Loading Screen Animations ---
+  function showLoading(title) {
+    loadingTitle.textContent = title;
+    loadingScreen.classList.remove('hidden');
+    resultsSection.classList.add('hidden');
+    
+    let tipIdx = 0;
+    loadingTip.textContent = state.loadingTips[tipIdx];
+    clearInterval(state.loadingTipInterval);
+    state.loadingTipInterval = setInterval(() => {
+      tipIdx = (tipIdx + 1) % state.loadingTips.length;
+      loadingTip.textContent = state.loadingTips[tipIdx];
+    }, 3000);
+  }
+
+  function hideLoading() {
+    loadingScreen.classList.add('hidden');
+    if (state.loadingTipInterval) {
+      clearInterval(state.loadingTipInterval);
+      state.loadingTipInterval = null;
+    }
+  }
+
+  // --- API Calls ---
+  analyzeImgBtn.addEventListener('click', async () => {
+    if (!state.isPremium) {
+      openPaywall();
+      return;
+    }
+    if (!state.imageUploadedBase64) {
+      alert("Please upload or capture a photo first.");
+      return;
+    }
+
+    showLoading("Analyzing Fridge Ingredients...");
+
+    try {
+      let ingredientsArray = [];
+      const isHostedServer = state.isServerMode || window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/');
+      let useClientKey = !isHostedServer;
+
+      if (isHostedServer) {
+        try {
+          const apiPath = getApiPath('analyze-image');
+          const response = await fetch(apiPath, {
+            method: 'POST',
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({
+              image: state.imageUploadedBase64,
+              mimeType: state.imageUploadedMime
+            })
+          });
+
+          if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Status ${response.status}: ${errText}`);
+          }
+          const data = await response.json();
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (rawText) {
+            ingredientsArray = JSON.parse(rawText.trim());
+          } else {
+            ingredientsArray = data;
+          }
+        } catch (serverErr) {
+          console.warn("Backend image analysis failed:", serverErr);
+          if (window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/')) {
+            alert("Secure Backend Function Error:\n" + serverErr.message);
+            hideLoading();
+            return;
+          }
+          useClientKey = true;
+        }
+      }
+
+      if (useClientKey) {
+        if (!state.apiKey) {
+          alert("Configure API Key first.");
+          openSettings();
+          return;
+        }
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-goog-api-key': state.apiKey
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: "Identify only the specific cooking ingredients you are highly confident about in this image. Do not guess generic food categories (such as 'grains', 'spices', or 'leftovers') or guess items that are blurry or partially hidden. If you are not completely sure about an item, omit it and do not list it. Return the results strictly as a JSON array of strings containing the item names, for example: [\"tomato\", \"cheese\", \"bell pepper\"]. Do not include markdown code block formatting or backticks. Return nothing but the JSON array."
+                  },
+                  {
+                    inlineData: {
+                      mimeType: state.imageUploadedMime || "image/jpeg",
+                      data: state.imageUploadedBase64
+                    }
+                  }
+                ]
+              }
+            ],
+            generationConfig: {
+              responseMimeType: "application/json"
+            }
+          })
+        });
+        if (!response.ok) throw new Error(response.statusText);
+        const data = await response.json();
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawText) {
+          ingredientsArray = JSON.parse(rawText.trim());
+        }
+      }
+
+      if (Array.isArray(ingredientsArray)) {
+        ingredientsArray.forEach(item => {
+          const name = item.toLowerCase().trim();
+          if (!name) return;
+
+          let exists = false;
+          const currentKeys = Object.keys(state.ingredients);
+          
+          for (const existingKey of currentKeys) {
+            const existingName = existingKey.toLowerCase().trim();
+            
+            if (existingName === name || 
+                (existingName.length > 3 && name.length > 3 && (existingName.includes(name) || name.includes(existingName)))) {
+              exists = true;
+              
+              if (name.length > existingName.length) {
+                const ingState = state.ingredients[existingKey].state;
+                delete state.ingredients[existingKey];
+                state.ingredients[name] = { name, state: ingState };
+              }
+              break;
+            }
+          }
+
+          if (!exists) {
+            state.ingredients[name] = { name, state: 'fresh' };
+          }
+        });
+        renderIngredients();
+      }
+    } catch (error) {
+      console.error("Failed to analyze image:", error);
+      alert("Failed to analyze fridge photo.");
+    } finally {
+      hideLoading();
+    }
+  });
+
+  generateRecipesBtn.addEventListener('click', async () => {
+    console.log("DEBUG: Generate Feast button clicked!");
+    console.log("DEBUG: state.isPremium =", state.isPremium);
+    console.log("DEBUG: state.isServerMode =", state.isServerMode);
+    
+    try {
+      const allowed = isGenerationAllowed();
+      console.log("DEBUG: isGenerationAllowed =", allowed);
+      if (!allowed) {
+        console.log("DEBUG: Opening paywall modal");
+        openPaywall();
+        return;
+      }
+    } catch (err) {
+      console.error("DEBUG: Error checking limits:", err);
+    }
+
+    const keys = Object.keys(state.ingredients);
+    console.log("DEBUG: Ingredients keys:", keys);
+    if (keys.length === 0) {
+      alert("Please add some ingredients first.");
+      return;
+    }
+
+    console.log("DEBUG: Triggering loading screen");
+    showLoading("Designing Culinary Masterpieces...");
+
+    const selectedDiets = Array.from(document.querySelectorAll('input[name="diet"]:checked')).map(el => el.value);
+    const mealType = document.getElementById('meal-type').value;
+    const prepTimeMax = document.getElementById('prep-time').value;
+
+    const listItems = keys.map(k => {
+      const ing = state.ingredients[k];
+      if (ing.state === 'urgent') return `${ing.name} (URGENT: EXPIRING TODAY)`;
+      if (ing.state === 'expiring') return `${ing.name} (EXPIRING SOON)`;
+      return ing.name;
+    });
+    const listString = listItems.join(', ');
+
+    const activeSpices = [...state.seasonings.staples, ...state.seasonings.custom];
+    const spicesString = activeSpices.join(', ');
+
+    let preferencesText = "";
+    if (selectedDiets.length) preferencesText += `Dietary constraints: must be ${selectedDiets.join(', ')}. `;
+    if (mealType !== 'any') preferencesText += `Meal category: ${mealType}. `;
+    if (prepTimeMax !== 'any') preferencesText += `Maximum preparation + cooking time must be strictly under ${prepTimeMax} minutes. `;
+
+    let seasoningsPromptText = "";
+    if (activeSpices.length) {
+      seasoningsPromptText = `You may assume the user has access to these seasonings and pantry staples: [${spicesString}]. Use them freely to make the recipe flavorful without marking them as unowned. For any other seasoning, spice, oil, or condiment that is NOT in this seasonings list, you must mark it as "owned": false so the user knows they need to buy it.`;
+    } else {
+      seasoningsPromptText = `Do not assume the user has access to any spices, seasonings, or oils. If a recipe needs any seasoning or oil, mark it as "owned": false unless it's in the available ingredients list [${listString}].`;
+    }
+
+    try {
+      let isHostedServer = state.isServerMode || window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/');
+      let useClientKey = !isHostedServer;
+
+      if (isHostedServer) {
+        try {
+          const apiPath = getApiPath('generate-recipe');
+          const response = await fetch(apiPath, {
+            method: 'POST',
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({
+              listString,
+              spicesString,
+              preferencesText,
+              seasoningsPromptText
+            })
+          });
+
+          if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Status ${response.status}: ${errText}`);
+          }
+          const data = await response.json();
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (rawText) {
+            state.generatedRecipes = JSON.parse(rawText.trim());
+          } else {
+            state.generatedRecipes = data;
+          }
+        } catch (serverErr) {
+          console.warn("Backend API request failed:", serverErr);
+          if (window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/')) {
+            alert("Secure Backend Function Error:\n" + serverErr.message);
+            hideLoading();
+            return;
+          }
+          useClientKey = true;
+        }
+      }
+
+      if (useClientKey) {
+        if (activeSpices.length) {
+          seasoningsPromptText = `You may assume the user has access to these seasonings and pantry staples: [${spicesString}]. Use them freely to make the recipe flavorful without marking them as unowned. For any other seasoning, spice, oil, or condiment that is NOT in this seasonings list, you must mark it as "owned": false so the user knows they need to buy it.`;
+        } else {
+          seasoningsPromptText = `Do not assume the user has access to any spices, seasonings, or oils. If a recipe needs any seasoning or oil, mark it as "owned": false unless it's in the available ingredients list [${listString}].`;
+        }
+
+        const systemPrompt = `You are a world-class professional chef. Generate 2 distinct, creative, and delicious recipes that utilize some or all of the following available ingredients: [${listString}].
+          ${preferencesText}
+          ${seasoningsPromptText}
+          Instructions:
+          1. Provide a beautiful title and an enticing description for each recipe.
+          2. Keep prep and cook times accurate and realistic.
+          3. For the ingredient list of each recipe, mark each item with "owned": true if it is in the available ingredients list [${listString}] or in the seasonings list [${spicesString}] (allowing minor singular/plural variations), or "owned": false if the user needs to get it.
+          4. Provide the correct category for each ingredient (must be one of: 'Produce', 'Meat & Seafood', 'Dairy & Eggs', 'P grains', 'Baking & Spices', 'Other').
+          5. Prioritize using the ingredients marked as URGENT or EXPIRING SOON. Make a note in the description if you saved these items from going to waste.
+          6. Provide clear, numbered steps. Set the "timer" property to an integer (duration in minutes) ONLY for passive waiting or duration-tracked events (like baking, roasting, simmering, boiling, preheating, or marinating). For active hand-on preparation steps that require no waiting (such as chopping, mixing, whisking, tossing, spreading, transferring, or garnishing), set "timer" to null.
+          7. Estimate and include the macronutrients (protein, carbs, and fat, in grams) in the "macros" block based on the recipe ingredients.
+          8. Return strictly a JSON array of objects conforming to the requested schema.`;
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-goog-api-key': state.apiKey
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: systemPrompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    title: { type: "STRING" },
+                    description: { type: "STRING" },
+                    prepTime: { type: "INTEGER" },
+                    cookTime: { type: "INTEGER" },
+                    calories: { type: "INTEGER" },
+                    macros: {
+                      type: "OBJECT",
+                      properties: {
+                        protein: { type: "INTEGER" },
+                        carbs: { type: "INTEGER" },
+                        fat: { type: "INTEGER" }
+                      },
+                      required: ["protein", "carbs", "fat"]
+                    },
+                    ingredients: {
+                      type: "ARRAY",
+                      items: {
+                        type: "OBJECT",
+                        properties: {
+                          name: { type: "STRING" },
+                          amount: { type: "STRING" },
+                          owned: { type: "BOOLEAN" },
+                          category: { type: "STRING" }
+                        },
+                        required: ["name", "amount", "owned", "category"]
+                      }
+                    },
+                    steps: {
+                      type: "ARRAY",
+                      items: {
+                        type: "OBJECT",
+                        properties: {
+                          text: { type: "STRING" },
+                          timer: { type: "INTEGER" }
+                        },
+                        required: ["text"]
+                      }
+                    },
+                    tags: {
+                      type: "ARRAY",
+                      items: { type: "STRING" }
+                    }
+                  },
+                  required: ["title", "description", "prepTime", "cookTime", "calories", "macros", "ingredients", "steps", "tags"]
+                }
+              }
+            }
+          })
+        });
+
+        if (!response.ok) {
+          let errText = response.statusText;
+          try {
+            const errJson = await response.json();
+            if (errJson.error && errJson.error.message) {
+              errText = errJson.error.message;
+            }
+          } catch(e) {}
+          throw new Error(errText);
+        }
+        const data = await response.json();
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawText) {
+          state.generatedRecipes = JSON.parse(rawText.trim());
+        }
+      }
+
+      if (state.generatedRecipes && state.generatedRecipes.length) {
+        incrementDailyGenerations();
+        renderRecipesList();
+      }
+    } catch (error) {
+      console.error("Failed to generate recipes:", error);
+      
+      let cooldownSeconds = 0;
+      const retryMatch = error.message.match(/Please retry in ([\d.]+)s/);
+      if (retryMatch) {
+        cooldownSeconds = Math.ceil(parseFloat(retryMatch[1]));
+      }
+
+      if (cooldownSeconds > 0) {
+        startGenerateCooldown(cooldownSeconds);
+      }
+
+      alert("Failed to generate recipes:\n" + error.message);
+    } finally {
+      hideLoading();
+    }
+  });
+
+  // --- Render Results UI ---
+  function renderRecipesList() {
+    recipesGrid.innerHTML = '';
+    if (!state.generatedRecipes || state.generatedRecipes.length === 0) {
+      resultsSection.classList.add('hidden');
+      return;
+    }
+
+    state.generatedRecipes.forEach((recipe, index) => {
+      const totalCount = recipe.ingredients.length;
+      const ownedCount = recipe.ingredients.filter(i => i.owned).length;
+      const matchPct = Math.round((ownedCount / totalCount) * 100);
+
+      const card = document.createElement('div');
+      card.className = 'recipe-card';
+      card.setAttribute('data-index', index);
+      card.innerHTML = `
+        <div class="card-accent-line"></div>
+        <div class="recipe-card-body">
+          <div class="recipe-meta-row">
+            <div class="meta-item">
+              <i data-lucide="clock"></i>
+              <span>${recipe.prepTime + recipe.cookTime} mins</span>
+            </div>
+            <div class="meta-item">
+              <i data-lucide="flame"></i>
+              <span>${recipe.calories} kcal</span>
+            </div>
+            <div class="meta-item" style="color: ${matchPct > 70 ? 'var(--success)' : matchPct > 40 ? 'var(--warning)' : 'var(--accent)'}">
+              <i data-lucide="check-square"></i>
+              <span>${matchPct}% match</span>
+            </div>
+          </div>
+          <h3 class="recipe-card-title">${recipe.title}</h3>
+          <p class="recipe-card-desc">${recipe.description}</p>
+          <div class="recipe-card-tags">
+            ${recipe.tags.slice(0, 3).map(t => `<span class="card-tag">${t}</span>`).join('')}
+          </div>
+        </div>
+      `;
+
+      if (state.isPremium) {
+        const cardPinBtn = document.createElement('button');
+        cardPinBtn.className = 'btn btn-secondary btn-sm';
+        cardPinBtn.style.marginTop = '1rem';
+        cardPinBtn.style.width = '100%';
+        cardPinBtn.style.borderColor = 'var(--primary)';
+        cardPinBtn.style.color = 'var(--primary)';
+        cardPinBtn.innerHTML = `<i data-lucide="pin"></i> Add to Planner`;
+        cardPinBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openPinModal(recipe);
+        });
+        card.querySelector('.recipe-card-body').appendChild(cardPinBtn);
+      }
+
+      card.addEventListener('click', () => openRecipeDetail(recipe));
+      recipesGrid.appendChild(card);
+    });
+
+    lucide.createIcons();
+    resultsSection.classList.remove('hidden');
+    resultsSection.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  // --- Details Modal, Swapper & Plating ---
+  function openRecipeDetail(recipe) {
+    state.currentRecipeViewed = recipe;
+    state.currentStepViewedIdx = 0;
+    
+    // Clear existing timer intervals
+    Object.values(state.activeTimers).forEach(t => clearInterval(t.interval));
+    state.activeTimers = {};
+
+    renderRecipeModalContent();
+    recipeModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function renderRecipeModalContent() {
+    const recipe = state.currentRecipeViewed;
+    const totalTime = recipe.prepTime + recipe.cookTime;
+    const missingIngredients = recipe.ingredients.filter(i => !i.owned);
+
+    // Build ingredients list with dynamic SWAP buttons
+    let ingredientsHTML = '';
+    recipe.ingredients.forEach((ing, index) => {
+      const statusClass = ing.owned ? 'status-owned' : 'status-missing';
+      const statusTitle = ing.owned ? 'Available' : 'Needs Purchase';
+      
+      const swapButton = state.isPremium ? `
+        <button class="ingredient-swap-btn" data-index="${index}" data-name="${ing.name}" title="Substitute ingredient" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:2px; display:inline-flex; align-items:center; transition:var(--transition);">
+          <i data-lucide="git-compare" style="width:0.85rem; height:0.85rem;"></i>
+        </button>
+      ` : '';
+
+      const deleteButton = `
+        <button class="ingredient-delete-btn" data-index="${index}" data-name="${ing.name}" title="Remove ingredient" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:2px; display:inline-flex; align-items:center; transition:var(--transition);">
+          <i data-lucide="trash-2" style="width:0.85rem; height:0.85rem;"></i>
+        </button>
+      `;
+
+      ingredientsHTML += `
+        <li class="ingredient-item" title="${statusTitle}" style="display:flex; align-items:center; justify-content:space-between; width:100%; gap:0.5rem;">
+          <div style="display:flex; align-items:center; gap:0.5rem; flex:1;">
+            <span class="status-indicator ${statusClass}"></span>
+            <span><strong>${ing.amount}</strong> ${ing.name}</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:0.25rem;">
+            ${swapButton}
+            ${deleteButton}
+          </div>
+        </li>
+      `;
+    });
+
+    // Build preparation steps with timers
+    let stepsHTML = '';
+    recipe.steps.forEach((step, idx) => {
+      const showTimer = step.timer && step.timer > 0;
+      let timerMarkup = '';
+      if (showTimer) {
+        if (state.isPremium) {
+          timerMarkup = `
+            <div class="step-timer-container" id="timer-container-${idx}">
+              <i data-lucide="clock" class="timer-clock-icon"></i>
+              <span class="timer-value-display" id="timer-display-${idx}">${step.timer}:00</span>
+              <button class="timer-btn play-btn" data-step="${idx}" data-duration="${step.timer}"><i data-lucide="play"></i> Start</button>
+              <button class="timer-btn reset-btn hidden" data-step="${idx}"><i data-lucide="rotate-ccw"></i> Reset</button>
+            </div>
+          `;
+        } else {
+          timerMarkup = `
+            <div class="step-timer-container" style="opacity: 0.6; cursor: pointer;" onclick="document.dispatchEvent(new CustomEvent('triggerPaywall'))">
+              <i data-lucide="lock" class="timer-clock-icon" style="stroke: var(--gold)"></i>
+              <span class="timer-value-display">${step.timer} mins</span>
+              <span style="font-size: 0.7rem; color: var(--gold); font-weight:600;">PREMIUM TIMER</span>
+            </div>
+          `;
+        }
+      }
+
+      stepsHTML += `
+        <div class="step-card" id="step-card-${idx}">
+          <div class="step-checkbox-container">
+            <input type="checkbox" class="step-checkbox" data-index="${idx}">
+          </div>
+          <div class="step-content">
+            <div class="step-number-row">
+              <div class="step-number">Step ${idx + 1}</div>
+            </div>
+            <div class="step-text">${step.text}</div>
+            ${timerMarkup}
+          </div>
+        </div>
+      `;
+    });
+
+    // Voice assistant bar markup if premium
+    let voiceAssistantHTML = '';
+    if (state.isPremium) {
+      voiceAssistantHTML = `
+        <div class="voice-assistant-bar">
+          <div class="mic-btn-container">
+            <button class="mic-btn ${state.voiceAssistantActive ? 'active' : ''}" id="modal-voice-mic-btn">
+              <i data-lucide="mic"></i>
+            </button>
+          </div>
+          <div class="voice-status-text" id="modal-voice-status-text">
+            ${state.voiceAssistantActive ? 'Voice active. Say "Read step", "Next step", or "Start timer"' : 'Activate hands-free voice assistant'}
+          </div>
+          <div class="voice-assistant-helper">🗣️ Hands-Free Assistant</div>
+        </div>
+      `;
+    }
+
+    modalBodyContent.innerHTML = `
+      <div class="recipe-detail-header">
+        <h1 class="recipe-detail-title">${recipe.title}</h1>
+        <div class="recipe-detail-stats">
+          <div class="detail-stat">
+            <i data-lucide="hourglass"></i>
+            <span>Prep: ${recipe.prepTime}m</span>
+          </div>
+          <div class="detail-stat">
+            <i data-lucide="cooking-pot"></i>
+            <span>Cook: ${recipe.cookTime}m</span>
+          </div>
+          <div class="detail-stat">
+            <i data-lucide="flame"></i>
+            <span>${recipe.calories} kcal</span>
+          </div>
+          
+          ${state.isPremium ? `
+            <button id="modal-plating-btn" class="btn btn-secondary btn-sm" style="margin-left: auto; border-color: var(--gold); color: var(--gold);">
+              <i data-lucide="instagram"></i> Plating Guide
+            </button>
+            <button id="modal-share-btn" class="btn btn-secondary btn-sm" style="margin-left: 0.5rem; border-color: var(--accent); color: var(--accent);">
+              <i data-lucide="share-2"></i> Share Card 📸
+            </button>
+            <button id="modal-pin-btn" class="btn btn-secondary btn-sm" style="margin-left: 0.5rem; border-color: var(--primary); color: var(--primary);">
+              <i data-lucide="calendar"></i> Add to Planner 📅
+            </button>
+          ` : ''}
+          
+          ${missingIngredients.length > 0 ? `
+            <button id="modal-generate-list" class="btn btn-accent btn-sm" style="${state.isPremium ? 'margin-left: 0.5rem;' : 'margin-left: auto;'}">
+              <i data-lucide="shopping-basket"></i> Get Shopping List
+            </button>
+          ` : ''}
+        </div>
+      </div>
+      
+      <!-- Voice Control bar -->
+      ${voiceAssistantHTML}
+
+      <!-- Macros Breakdown Panel -->
+      ${recipe.macros ? `
+        <div class="glass-panel macros-breakdown-bar" style="margin-top: 1rem; margin-bottom: 1rem; padding: 0.75rem 1rem; display:flex; align-items:center; justify-content:space-between; gap:1.5rem; flex-wrap:wrap; border-color: rgba(139,92,246,0.15); border-radius: var(--radius-sm);">
+          <div style="display:flex; align-items:center; gap:0.5rem;">
+            <i data-lucide="pie-chart" style="color:var(--primary); width:1.1rem; height:1.1rem;"></i>
+            <span style="font-weight:700; font-size:0.85rem; font-family:var(--font-heading);">Nutritional Macros:</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:1.25rem; flex:1; justify-content:flex-end; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:0.35rem;">
+              <span style="width:8px; height:8px; border-radius:50%; background:#f43f5e; display:inline-block;"></span>
+              <span style="font-size:0.8rem; font-weight:600; color:var(--text-secondary);">Protein: <strong>${recipe.macros.protein}g</strong></span>
+            </div>
+            <div style="display:flex; align-items:center; gap:0.35rem;">
+              <span style="width:8px; height:8px; border-radius:50%; background:#3b82f6; display:inline-block;"></span>
+              <span style="font-size:0.8rem; font-weight:600; color:var(--text-secondary);">Carbs: <strong>${recipe.macros.carbs}g</strong></span>
+            </div>
+            <div style="display:flex; align-items:center; gap:0.35rem;">
+              <span style="width:8px; height:8px; border-radius:50%; background:#eab308; display:inline-block;"></span>
+              <span style="font-size:0.8rem; font-weight:600; color:var(--text-secondary);">Fat: <strong>${recipe.macros.fat}g</strong></span>
+            </div>
+            <div style="width:100px; height:12px; border-radius:6px; overflow:hidden; background:rgba(255,255,255,0.05); display:flex; border:1px solid var(--border-color);">
+              ${(() => {
+                const p = recipe.macros.protein || 1;
+                const c = recipe.macros.carbs || 1;
+                const f = recipe.macros.fat || 1;
+                const total = p + c + f;
+                const pPct = Math.round((p / total) * 100);
+                const cPct = Math.round((c / total) * 100);
+                const fPct = 100 - pPct - cPct;
+                return `
+                  <div style="width:${pPct}%; background:#f43f5e;" title="Protein: ${pPct}%"></div>
+                  <div style="width:${cPct}%; background:#3b82f6;" title="Carbs: ${cPct}%"></div>
+                  <div style="width:${fPct}%; background:#eab308;" title="Fat: ${fPct}%"></div>
+                `;
+              })()}
+            </div>
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="recipe-detail-layout">
+        <!-- Ingredients (Left) -->
+        <div class="ingredients-panel">
+          <h3>
+            <span><i data-lucide="shopping-basket"></i> Ingredients</span>
+          </h3>
+          <ul class="ingredients-checklist">
+            ${ingredientsHTML}
+          </ul>
+        </div>
+        
+        <!-- Steps (Right) -->
+        <div class="steps-panel">
+          <h3>
+            <span><i data-lucide="list-ordered"></i> Preparation Steps</span>
+          </h3>
+          <div class="steps-list">
+            ${stepsHTML}
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+        <button id="finish-cooking-btn" class="btn btn-accent" style="background: var(--success); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);">
+          <i data-lucide="check-circle"></i> Finish Cooking & Save Waste 🍳
+        </button>
+      </div>
+    `;
+
+    lucide.createIcons();
+
+    // Attach Event Listeners inside modal content
+    const listBtn = document.getElementById('modal-generate-list');
+    if (listBtn) listBtn.addEventListener('click', () => openShoppingList(recipe));
+
+    const platingBtn = document.getElementById('modal-plating-btn');
+    if (platingBtn) platingBtn.addEventListener('click', fetchPlatingGuide);
+
+    const shareBtn = document.getElementById('modal-share-btn');
+    if (shareBtn) shareBtn.addEventListener('click', () => openSocialCardModal(recipe));
+
+    const modalPinBtn = document.getElementById('modal-pin-btn');
+    if (modalPinBtn) modalPinBtn.addEventListener('click', () => openPinModal(recipe));
+
+    modalBodyContent.querySelectorAll('.ingredient-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const name = btn.getAttribute('data-name');
+        recipe.ingredients = recipe.ingredients.filter(i => i.name !== name);
+        renderRecipeModalContent();
+      });
+    });
+
+    document.getElementById('finish-cooking-btn').addEventListener('click', () => {
+      const ownedIngredients = recipe.ingredients.filter(i => i.owned);
+      
+      // Update persistent stats
+      state.stats.mealsCooked++;
+      state.stats.moneySaved += ownedIngredients.length * 1.50;
+      const weight = ownedIngredients.length * 0.75;
+      state.stats.weightRescued += weight;
+      state.stats.co2Prevented += weight * 2.4;
+
+      // Cooking Streak logic
+      const todayStr = new Date().toISOString().split('T')[0];
+      const lastStr = state.stats.lastCookedDate;
+      if (!lastStr) {
+        state.stats.streak = 1;
+      } else {
+        const lastDate = new Date(lastStr);
+        const todayDate = new Date(todayStr);
+        const diffTime = Math.abs(todayDate - lastDate);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        if (diffDays === 1) {
+          state.stats.streak++;
+        } else if (diffDays > 1) {
+          state.stats.streak = 1; // Streak broken, restart
+        }
+      }
+      state.stats.lastCookedDate = todayStr;
+      
+      localStorage.setItem('feasts_stats', JSON.stringify(state.stats));
+      updateDashboardUI();
+      recordSavings(ownedIngredients.length);
+      
+      alert(`Feast complete! You saved an estimated $${(ownedIngredients.length * 1.50).toFixed(2)} from going to waste! 🥳`);
+      closeRecipeDetail();
+    });
+
+    const checkboxes = modalBodyContent.querySelectorAll('.step-checkbox');
+    checkboxes.forEach(cb => {
+      cb.addEventListener('change', (e) => {
+        const idx = parseInt(e.target.getAttribute('data-index'));
+        const card = document.getElementById(`step-card-${idx}`);
+        if (e.target.checked) {
+          card.classList.add('completed');
+          state.currentStepViewedIdx = Math.min(recipe.steps.length - 1, idx + 1);
+          if (state.activeTimers[idx] && state.activeTimers[idx].running) {
+            pauseTimer(idx);
+          }
+        } else {
+          card.classList.remove('completed');
+          state.currentStepViewedIdx = idx;
+        }
+      });
+    });
+
+    // Timers listeners
+    if (state.isPremium) {
+      modalBodyContent.querySelectorAll('.play-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const stepIdx = btn.getAttribute('data-step');
+          const duration = parseInt(btn.getAttribute('data-duration'));
+          toggleTimer(stepIdx, duration, btn);
+        });
+      });
+
+      modalBodyContent.querySelectorAll('.reset-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const stepIdx = btn.getAttribute('data-step');
+          resetTimer(stepIdx, btn);
+        });
+      });
+
+      // Voice Activation Microphone Click
+      const micBtn = document.getElementById('modal-voice-mic-btn');
+      if (micBtn) {
+        micBtn.addEventListener('click', toggleVoiceAssistant);
+      }
+
+      // Swap button click trigger
+      modalBodyContent.querySelectorAll('.ingredient-swap-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const name = btn.getAttribute('data-name');
+          openSwapModal(name);
+        });
+      });
+    }
+  }
+
+  function closeRecipeDetail() {
+    recipeModal.classList.add('hidden');
+    document.body.style.overflow = '';
+    Object.values(state.activeTimers).forEach(t => clearInterval(t.interval));
+    state.activeTimers = {};
+    deactivateVoiceAssistant();
+  }
+
+  closeRecipeModal.addEventListener('click', closeRecipeDetail);
+  modalOverlay.addEventListener('click', closeRecipeDetail);
+
+  // --- Voice Assistant (Hands-Free Speech API) ---
+  function toggleVoiceAssistant() {
+    if (state.voiceAssistantActive) {
+      deactivateVoiceAssistant();
+    } else {
+      activateVoiceAssistant();
+    }
+  }
+
+  function activateVoiceAssistant() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice speech recognition is not supported in this browser. Please try Chrome or Edge.");
+      return;
+    }
+
+    state.voiceAssistantActive = true;
+    state.speechRecognition = new SpeechRecognition();
+    state.speechRecognition.continuous = true;
+    state.speechRecognition.interimResults = false;
+    state.speechRecognition.lang = 'en-US';
+
+    const micBtn = document.getElementById('modal-voice-mic-btn');
+    const statusText = document.getElementById('modal-voice-status-text');
+    if (micBtn) micBtn.classList.add('active');
+    if (statusText) statusText.textContent = 'Voice active. Say "Read step", "Next step", or "Start timer"';
+
+    state.speechRecognition.onresult = (e) => {
+      const result = e.results[e.results.length - 1][0].transcript.toLowerCase().trim();
+      console.log("Speech Matched Command:", result);
+      
+      const statusText = document.getElementById('modal-voice-status-text');
+      if (statusText) statusText.innerHTML = `Matched command: <strong style="color:var(--accent)">"${result}"</strong>`;
+      
+      handleVoiceCommand(result);
+    };
+
+    state.speechRecognition.onerror = (err) => {
+      console.log("Speech recognition error:", err);
+      const statusText = document.getElementById('modal-voice-status-text');
+      if (err.error === 'not-allowed') {
+        if (statusText) {
+          statusText.innerHTML = `<span style="color:var(--accent); font-weight:600;">🚫 Mic blocked! Click lock/settings icon in address bar to allow mic.</span>`;
+        }
+        deactivateVoiceAssistant();
+      } else if (err.error === 'no-speech') {
+        if (statusText) {
+          statusText.textContent = 'Voice active. Say "Read step", "Next step", or "Start timer"';
+        }
+      } else {
+        if (statusText) {
+          statusText.textContent = `Speech error (${err.error}). Say "Next step" or "Read step".`;
+        }
+      }
+    };
+
+    state.speechRecognition.onend = () => {
+      if (state.voiceAssistantActive) {
+        try {
+          state.speechRecognition.start(); // Auto restart to keep listening
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    };
+
+    state.speechRecognition.start();
+    speakText("Voice assistant activated. Say next step to advance, or read step to hear instructions.");
+  }
+
+  function deactivateVoiceAssistant() {
+    state.voiceAssistantActive = false;
+    if (state.speechRecognition) {
+      state.speechRecognition.stop();
+      state.speechRecognition = null;
+    }
+    const micBtn = document.getElementById('modal-voice-mic-btn');
+    const statusText = document.getElementById('modal-voice-status-text');
+    if (micBtn) micBtn.classList.remove('active');
+    if (statusText) statusText.textContent = 'Activate hands-free voice assistant';
+    
+    window.speechSynthesis.cancel();
+  }
+
+  function handleVoiceCommand(command) {
+    const recipe = state.currentRecipeViewed;
+    const currentIdx = state.currentStepViewedIdx;
+
+    const low = command.toLowerCase();
+    const isChefQuestion = low.includes('chef') || 
+                           low.includes('how do i') || 
+                           low.includes('what is') || 
+                           low.includes('why do we') || 
+                           low.includes('can i swap') || 
+                           low.includes('can i replace') || 
+                           low.includes('substitute for') ||
+                           low.includes('how to');
+
+    if (isChefQuestion) {
+      handleChefConversationalQuestion(command);
+      return;
+    }
+
+    if (command.includes('next') || command.includes('forward')) {
+      if (currentIdx < recipe.steps.length) {
+        // Mark step as completed
+        const checkbox = modalBodyContent.querySelector(`.step-checkbox[data-index="${currentIdx}"]`);
+        if (checkbox && !checkbox.checked) {
+          checkbox.checked = true;
+          checkbox.dispatchEvent(new Event('change'));
+        }
+        
+        // Speak next step
+        const nextIdx = state.currentStepViewedIdx;
+        if (nextIdx < recipe.steps.length) {
+          speakStepText(nextIdx);
+        } else {
+          speakText("All steps completed. Ready to finish cooking!");
+        }
+      }
+    } else if (command.includes('back') || command.includes('previous')) {
+      if (currentIdx > 0) {
+        const prevIdx = currentIdx - 1;
+        const checkbox = modalBodyContent.querySelector(`.step-checkbox[data-index="${prevIdx}"]`);
+        if (checkbox && checkbox.checked) {
+          checkbox.checked = false;
+          checkbox.dispatchEvent(new Event('change'));
+        }
+        state.currentStepViewedIdx = prevIdx;
+        speakStepText(prevIdx);
+      }
+    } else if (command.includes('read') || command.includes('repeat')) {
+      speakStepText(currentIdx);
+    } else if (command.includes('pause') || command.includes('stop') || command.includes('hold')) {
+      const container = document.getElementById(`timer-container-${currentIdx}`);
+      if (container) {
+        const playBtn = container.querySelector('.play-btn');
+        if (playBtn && playBtn.textContent.includes("Pause")) {
+          playBtn.click();
+          speakText("Timer paused.");
+        }
+      }
+    } else if (command.includes('reset')) {
+      const container = document.getElementById(`timer-container-${currentIdx}`);
+      if (container) {
+        const resetBtn = container.querySelector('.reset-btn');
+        if (resetBtn) {
+          resetBtn.click();
+          speakText("Timer reset.");
+        }
+      } else {
+        speakText("No timer found for this step.");
+      }
+    } else if (command.includes('start') || command.includes('timer') || command.includes('play') || command.includes('resume')) {
+      const container = document.getElementById(`timer-container-${currentIdx}`);
+      if (container) {
+        const playBtn = container.querySelector('.play-btn');
+        if (playBtn && (playBtn.textContent.includes("Start") || playBtn.textContent.includes("Resume"))) {
+          playBtn.click();
+          speakText("Timer started.");
+        }
+      } else {
+        speakText("No timer found for this step.");
+      }
+    } else if (command.includes('finish') || command.includes('done')) {
+      const finishBtn = document.getElementById('finish-cooking-btn');
+      if (finishBtn) finishBtn.click();
+    }
+  }
+
+  function speakStepText(idx) {
+    const step = state.currentRecipeViewed.steps[idx];
+    if (step) {
+      speakText(`Step ${idx + 1}. ${step.text}`);
+      
+      // Visually scroll step card into view
+      const stepCard = document.getElementById(`step-card-${idx}`);
+      if (stepCard) {
+        stepCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        stepCard.style.boxShadow = '0 0 15px var(--primary-glow)';
+        setTimeout(() => {
+          stepCard.style.boxShadow = '';
+        }, 1500);
+      }
+    }
+  }
+
+  function speakText(text) {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel(); // Stop talking
+      const utterance = new SpeechSynthesisUtterance(text);
+      
+      const voices = window.speechSynthesis.getVoices();
+      // Look for Google US English (a high-quality female voice in Chrome)
+      // or Microsoft Zira (standard female in Windows), or general female
+      let selectedVoice = voices.find(v => v.name.includes('Google US English') && v.lang === 'en-US');
+      if (!selectedVoice) {
+        selectedVoice = voices.find(v => v.name.includes('Zira') && v.lang.startsWith('en'));
+      }
+      if (!selectedVoice) {
+        selectedVoice = voices.find(v => v.lang.startsWith('en') && (v.name.toLowerCase().includes('female') || v.name.toLowerCase().includes('natural')));
+      }
+      if (!selectedVoice) {
+        selectedVoice = voices.find(v => v.lang.startsWith('en'));
+      }
+      
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+      
+      utterance.rate = 0.95; // Slightly slower is cleaner and easier to understand
+      utterance.pitch = 1.05; // Slightly higher pitch is warmer and friendlier
+      window.speechSynthesis.speak(utterance);
+    }
+  }
+
+  // --- Dynamic Ingredient Swapper ---
+  function openSwapModal(name) {
+    state.swapTargetIngredient = name;
+    swapTargetName.textContent = name;
+    swapInput.value = '';
+    
+    // Check for smart substitutions recommendations
+    const normalized = name.toLowerCase().trim();
+    const options = SMART_SWAPS[normalized] || [];
+    if (options.length > 0 && smartSwapsList && smartSwapsContainer) {
+      smartSwapsList.innerHTML = '';
+      options.forEach(opt => {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-secondary btn-sm';
+        btn.style.fontSize = '0.75rem';
+        btn.style.padding = '0.2rem 0.5rem';
+        btn.style.borderColor = 'var(--primary)';
+        btn.style.color = '#fff';
+        btn.style.background = 'rgba(139,92,246,0.1)';
+        btn.innerHTML = `<strong>${opt.name}</strong> <span style="color:var(--success); font-weight:700; margin-left:0.25rem;">${opt.match}%</span>`;
+        btn.addEventListener('click', () => {
+          swapInput.value = opt.name;
+        });
+        smartSwapsList.appendChild(btn);
+      });
+      smartSwapsContainer.classList.remove('hidden');
+    } else if (smartSwapsContainer) {
+      smartSwapsContainer.classList.add('hidden');
+    }
+
+    swapModal.classList.remove('hidden');
+  }
+
+  function closeSwapDialog() {
+    swapModal.classList.add('hidden');
+    state.swapTargetIngredient = null;
+  }
+
+  closeSwapModal.addEventListener('click', closeSwapDialog);
+  swapOverlayBg.addEventListener('click', closeSwapDialog);
+  cancelSettings.addEventListener('click', closeSwapDialog);
+  cancelSwap.addEventListener('click', closeSwapDialog);
+
+  confirmSwap.addEventListener('click', async () => {
+    const substituteName = swapInput.value.trim().toLowerCase();
+    const oldName = state.swapTargetIngredient;
+    
+    if (!substituteName) {
+      alert("Please enter a substitute ingredient.");
+      return;
+    }
+
+    closeSwapDialog();
+    showLoading(`Substituting ${oldName} with ${substituteName}...`);
+
+    try {
+      let updatedSteps = [];
+      const recipe = state.currentRecipeViewed;
+
+      const isHostedServer = state.isServerMode || window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/');
+      let useClientKey = !isHostedServer;
+
+      if (isHostedServer) {
+        try {
+          const apiPath = getApiPath('substitute');
+          const response = await fetch(apiPath, {
+            method: 'POST',
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({
+              recipeTitle: recipe.title,
+              steps: recipe.steps,
+              oldName: oldName,
+              substituteName: substituteName
+            })
+          });
+
+          if (!response.ok) throw new Error("Server failed");
+          const data = await response.json();
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (rawText) {
+            updatedSteps = JSON.parse(rawText.trim());
+          } else {
+            updatedSteps = data;
+          }
+        } catch (serverErr) {
+          console.warn("Backend substitution failed. Falling back to local client key:", serverErr);
+          useClientKey = true;
+        }
+      }
+
+      if (useClientKey) {
+        // Local mode fallback
+        if (!state.apiKey) {
+          alert("Configure API Key first.");
+          openSettings();
+          return;
+        }
+
+        const prompt = `You are a professional chef. We have a recipe named "${recipe.title}" with these instructions:
+          ${JSON.stringify(recipe.steps)}
+          
+          The user wants to substitute the ingredient "${oldName}" with "${substituteName}".
+          Rewrite the preparation steps array. Adjust the cooking instructions, timings, or actions in each step only if necessary to accommodate the new ingredient (e.g. if swapping chicken for tofu, adjust cooking steps to ensure tofu is handled correctly).
+          Keep the same number of steps.
+          Each step must be an object with:
+          - "text" (rewritten instruction string)
+          - "timer" (integer representing duration in minutes, or null if no timer is needed)
+
+          Return strictly a JSON array containing these steps, conforming to the schema of array of step objects.`;
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-goog-api-key': state.apiKey
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    text: { type: "STRING" },
+                    timer: { type: "INTEGER" }
+                  },
+                  required: ["text"]
+                }
+              }
+            }
+          })
+        });
+        if (!response.ok) throw new Error(response.statusText);
+        const data = await response.json();
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawText) {
+          updatedSteps = JSON.parse(rawText.trim());
+        }
+      }
+
+      if (Array.isArray(updatedSteps)) {
+        // Apply changes to current local state
+        recipe.steps = updatedSteps;
+        
+        // Find and swap ingredient name in details list
+        const ingIndex = recipe.ingredients.findIndex(i => i.name.toLowerCase() === oldName.toLowerCase());
+        if (ingIndex !== -1) {
+          recipe.ingredients[ingIndex].name = substituteName;
+          // Check if user owns the new item
+          recipe.ingredients[ingIndex].owned = !!state.ingredients[substituteName];
+        }
+
+        // Re-render Detail modal content
+        renderRecipeModalContent();
+        triggerBeep(500, 200);
+      }
+    } catch (err) {
+      console.error("Ingredient swap failed:", err);
+      alert("Failed to substitute ingredient.");
+    } finally {
+      hideLoading();
+    }
+  });
+
+  // --- Michelin Plating Guide Fetcher ---
+  async function fetchPlatingGuide() {
+    if (!state.isPremium) {
+      openPaywall();
+      return;
+    }
+    const recipe = state.currentRecipeViewed;
+
+    if (recipe.platingGuide) {
+      renderPlatingContent(recipe.platingGuide);
+      return;
+    }
+
+    showLoading(`Consulting Visual Designer for ${recipe.title}...`);
+
+    try {
+      let platingArray = [];
+      const isHostedServer = state.isServerMode || window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/');
+      let useClientKey = !isHostedServer;
+
+      if (isHostedServer) {
+        try {
+          const apiPath = getApiPath('generate-plating');
+          const response = await fetch(apiPath, {
+            method: 'POST',
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({
+              recipeTitle: recipe.title,
+              description: recipe.description,
+              ingredients: recipe.ingredients
+            })
+          });
+
+          if (!response.ok) throw new Error("Server failed");
+          const data = await response.json();
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (rawText) {
+            platingArray = JSON.parse(rawText.trim());
+          } else {
+            platingArray = data;
+          }
+        } catch (serverErr) {
+          console.warn("Backend plating guide failed. Falling back to local client key:", serverErr);
+          useClientKey = true;
+        }
+      }
+
+      if (useClientKey) {
+        if (!state.apiKey) {
+          alert("Configure API Key first.");
+          openSettings();
+          return;
+        }
+
+        const prompt = `You are a Michelin-starred head chef. Design a plating and presentation guide for the dish "${recipe.title}" (${recipe.description}).
+          The ingredients are: ${JSON.stringify(recipe.ingredients.map(i => i.name))}.
+          
+          Provide your plating instructions in standard JSON format containing a list of sections. Each section must have:
+          - "title" (the part of presentation, e.g. "Color Theme & Dinnerware Selection", "Plating Architecture", "Garnishing Details", "Texture & Contrast Tips")
+          - "tips" (array of strings, each being a detailed plating instruction or suggestion)
+
+          Return strictly a JSON array of objects with "title" and "tips".`;
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-goog-api-key': state.apiKey
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    title: { type: "STRING" },
+                    tips: {
+                      type: "ARRAY",
+                      items: { type: "STRING" }
+                    }
+                  },
+                  required: ["title", "tips"]
+                }
+              }
+            }
+          })
+        });
+        if (!response.ok) throw new Error(response.statusText);
+        const data = await response.json();
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawText) {
+          platingArray = JSON.parse(rawText.trim());
+        }
+      }
+
+      if (Array.isArray(platingArray)) {
+        recipe.platingGuide = platingArray;
+        renderPlatingContent(platingArray);
+      }
+    } catch (err) {
+      console.error("Failed to generate plating details:", err);
+      alert("Failed to consult Michelin guide.");
+    } finally {
+      hideLoading();
+    }
+  }
+
+  function renderPlatingContent(sections) {
+    let textHTML = '';
+    sections.forEach(sec => {
+      let tipsHTML = '';
+      sec.tips.forEach(tip => {
+        tipsHTML += `<li style="font-size:0.8rem; line-height:1.4; color:var(--text-secondary); margin-bottom:0.4rem;">${tip}</li>`;
+      });
+      textHTML += `
+        <div class="plating-section" style="margin-bottom:1rem;">
+          <div class="plating-section-title" style="font-family:var(--font-heading); font-weight:700; font-size:0.9rem; color:var(--gold); margin-bottom:0.4rem;">${sec.title}</div>
+          <ul class="plating-list" style="padding-left:1.2rem; margin:0;">
+            ${tipsHTML}
+          </ul>
+        </div>
+      `;
+    });
+
+    platingBodyContent.innerHTML = `
+      <div class="plating-split-layout" style="display:grid; grid-template-columns: 1fr 1.3fr; gap:1.5rem; align-items:start;">
+        <div class="plating-canvas-side" style="display:flex; flex-direction:column; align-items:center; gap:0.75rem;">
+          <div style="position:relative; width:280px; height:280px; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow:hidden; background:#0b0d19; box-shadow: 0 4px 20px rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center;">
+            <video id="plating-video" autoplay playsinline style="position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; display:none; transform: scaleX(-1);"></video>
+            <canvas id="plating-canvas" width="280" height="280" style="position:relative; display:block; max-width:100%; height:auto; z-index:2; transition: opacity 0.3s ease;"></canvas>
+          </div>
+          <button id="plating-camera-btn" class="btn btn-secondary btn-sm" style="width:100%; border-color:var(--accent); color:var(--accent);">
+            <i data-lucide="camera"></i> Open Plating AR Camera
+          </button>
+          <span style="font-size:0.72rem; color:var(--text-muted); font-style:italic; text-align:center;">🍽️ Michelin Architecture Schematic Draft</span>
+        </div>
+        <div class="plating-text-side" style="max-height:50vh; overflow-y:auto; padding-right:0.5rem;">
+          ${textHTML}
+        </div>
+      </div>
+    `;
+
+    lucide.createIcons();
+
+    // Bind camera button
+    const camBtn = document.getElementById('plating-camera-btn');
+    if (camBtn) camBtn.addEventListener('click', startPlatingCamera);
+
+    setTimeout(() => {
+      const canvas = document.getElementById('plating-canvas');
+      if (canvas) {
+        drawPlatingSchematic(canvas, state.currentRecipeViewed);
+      }
+    }, 50);
+
+    platingModal.classList.remove('hidden');
+  }
+
+  function drawPlatingSchematic(canvas, recipe) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, 280, 280);
+
+    const cx = 140;
+    const cy = 140;
+
+    // Ceramic plate
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 110, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Premium gold rim
+    ctx.strokeStyle = 'rgba(217, 119, 6, 0.6)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 108, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner rim
+    ctx.strokeStyle = '#f1f5f9';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 80, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Starch Bed
+    ctx.fillStyle = 'rgba(254, 240, 138, 0.5)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 45, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Sliced Protein (3 slices seared golden brown)
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-25 * Math.PI / 180);
+    ctx.fillStyle = 'rgba(180, 83, 9, 0.85)';
+    ctx.strokeStyle = 'rgba(120, 53, 4, 0.9)';
+    ctx.lineWidth = 1.5;
+    drawRoundedRect(ctx, -15, -35, 30, 16, 4, true, true);
+    drawRoundedRect(ctx, -18, -10, 36, 16, 4, true, true);
+    drawRoundedRect(ctx, -15, 15, 30, 16, 4, true, true);
+    ctx.restore();
+
+    // Culinary Glaze Drizzle
+    ctx.strokeStyle = '#db2777';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - 65, cy + 25);
+    ctx.quadraticCurveTo(cx - 30, cy + 65, cx + 25, cy + 55);
+    ctx.quadraticCurveTo(cx + 65, cy + 45, cx + 55, cy - 35);
+    ctx.stroke();
+
+    // Garnish sprinkles
+    ctx.fillStyle = '#22c55e';
+    const greenDots = [
+      {x: cx - 20, y: cy - 20},
+      {x: cx + 25, y: cy - 10},
+      {x: cx + 5, y: cy + 25},
+      {x: cx - 35, y: cy + 5},
+      {x: cx + 15, y: cy - 28},
+      {x: cx - 12, y: cy + 30}
+    ];
+    greenDots.forEach(dot => {
+      ctx.beginPath();
+      ctx.arc(dot.x, dot.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Guidelines & Labels
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.lineWidth = 0.8;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.font = '800 9px "Outfit", sans-serif';
+
+    // Bed base line
+    ctx.beginPath();
+    ctx.moveTo(cx - 25, cy + 35);
+    ctx.lineTo(cx - 85, cy + 70);
+    ctx.lineTo(cx - 105, cy + 70);
+    ctx.stroke();
+    ctx.fillText('BED BASE', cx - 102, cy + 65);
+
+    // Protein line
+    ctx.beginPath();
+    ctx.moveTo(cx - 5, cy - 15);
+    ctx.lineTo(cx - 70, cy - 75);
+    ctx.lineTo(cx - 95, cy - 75);
+    ctx.stroke();
+    ctx.fillText('PROTEIN', cx - 92, cy - 80);
+
+    // Drizzle line
+    ctx.beginPath();
+    ctx.moveTo(cx + 45, cy + 50);
+    ctx.lineTo(cx + 80, cy + 75);
+    ctx.lineTo(cx + 105, cy + 75);
+    ctx.stroke();
+    ctx.fillText('DRIZZLE', cx + 80, cy + 70);
+
+    // Garnish line
+    ctx.beginPath();
+    ctx.moveTo(cx + 25, cy - 25);
+    ctx.lineTo(cx + 75, cy - 65);
+    ctx.lineTo(cx + 100, cy - 65);
+    ctx.stroke();
+    ctx.fillText('GARNISH', cx + 75, cy - 70);
+  }
+
+  function closePlatingGuide() {
+    stopPlatingCamera();
+    platingModal.classList.add('hidden');
+  }
+
+  closePlatingModal.addEventListener('click', closePlatingGuide);
+  platingOverlayBg.addEventListener('click', closePlatingGuide);
+
+  // --- Visual Timer Helper Operations ---
+  function toggleTimer(stepIdx, durationMinutes, btnElement) {
+    if (!state.activeTimers[stepIdx]) {
+      state.activeTimers[stepIdx] = {
+        totalSeconds: durationMinutes * 60,
+        remainingSeconds: durationMinutes * 60,
+        running: false,
+        interval: null
+      };
+    }
+
+    const timer = state.activeTimers[stepIdx];
+    const container = document.getElementById(`timer-container-${stepIdx}`);
+    const resetBtn = container.querySelector('.reset-btn');
+
+    if (timer.running) {
+      pauseTimer(stepIdx);
+      btnElement.innerHTML = `<i data-lucide="play"></i> Resume`;
+    } else {
+      timer.running = true;
+      container.classList.add('timer-active');
+      resetBtn.classList.remove('hidden');
+      btnElement.innerHTML = `<i data-lucide="pause"></i> Pause`;
+
+      timer.interval = setInterval(() => {
+        timer.remainingSeconds -= 1;
+        updateTimerDisplay(stepIdx);
+
+        if (timer.remainingSeconds <= 0) {
+          clearInterval(timer.interval);
+          timer.running = false;
+          container.classList.remove('timer-active');
+          btnElement.innerHTML = `<i data-lucide="play"></i> Restart`;
+          triggerAlarmSound();
+          alert(`Timer completed for Step ${parseInt(stepIdx) + 1}!`);
+        }
+      }, 1000);
+    }
+    lucide.createIcons();
+  }
+
+  function pauseTimer(stepIdx) {
+    const timer = state.activeTimers[stepIdx];
+    if (timer && timer.running) {
+      clearInterval(timer.interval);
+      timer.running = false;
+      
+      const container = document.getElementById(`timer-container-${stepIdx}`);
+      container.classList.remove('timer-active');
+      
+      const playBtn = container.querySelector('.play-btn');
+      playBtn.innerHTML = `<i data-lucide="play"></i> Resume`;
+      lucide.createIcons();
+    }
+  }
+
+  function resetTimer(stepIdx, resetBtnElement) {
+    const timer = state.activeTimers[stepIdx];
+    if (timer) {
+      clearInterval(timer.interval);
+      timer.running = false;
+      timer.remainingSeconds = timer.totalSeconds;
+      
+      const container = document.getElementById(`timer-container-${stepIdx}`);
+      container.classList.remove('timer-active');
+      
+      const playBtn = container.querySelector('.play-btn');
+      playBtn.innerHTML = `<i data-lucide="play"></i> Start`;
+      resetBtnElement.classList.add('hidden');
+      
+      updateTimerDisplay(stepIdx);
+      lucide.createIcons();
+    }
+  }
+
+  function updateTimerDisplay(stepIdx) {
+    const timer = state.activeTimers[stepIdx];
+    const display = document.getElementById(`timer-display-${stepIdx}`);
+    if (timer && display) {
+      const minutes = Math.floor(timer.remainingSeconds / 60);
+      const seconds = timer.remainingSeconds % 60;
+      display.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+  }
+
+  function triggerBeep(frequency, duration) {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = frequency;
+      gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration/1000);
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + duration/1000);
+    } catch (e) {
+      console.log("Audio not yet user-activated.");
+    }
+  }
+
+  function triggerAlarmSound() {
+    triggerBeep(880, 200);
+    setTimeout(() => triggerBeep(880, 200), 250);
+    setTimeout(() => triggerBeep(880, 400), 500);
+  }
+
+  // --- Shopping List Generator ---
+  function openShoppingList(recipe) {
+    if (!state.isPremium) {
+      openPaywall();
+      return;
+    }
+    const missingItems = recipe.ingredients.filter(i => !i.owned);
+    const categories = {};
+    missingItems.forEach(item => {
+      const dept = item.category || 'Other';
+      if (!categories[dept]) categories[dept] = [];
+      categories[dept].push(item);
+    });
+
+    shoppingListCategories.innerHTML = '';
+    Object.keys(categories).forEach(deptName => {
+      const section = document.createElement('div');
+      section.className = 'shopping-dept-section';
+      
+      let itemsHTML = '';
+      categories[deptName].forEach((item, index) => {
+        const uniqueId = `shop-item-${deptName.replace(/\s+/g, '')}-${index}`;
+        itemsHTML += `
+          <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
+            <label class="shopping-item-checkbox" for="${uniqueId}" style="flex:1;">
+              <input type="checkbox" id="${uniqueId}">
+              <span class="shopping-item-name"><strong>${item.amount}</strong> ${item.name}</span>
+            </label>
+            <button class="shopping-item-delete-btn" data-name="${item.name}" title="Remove item" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:2px; display:inline-flex; align-items:center; transition:var(--transition); margin-left:0.5rem;">
+              <i data-lucide="trash-2" style="width:0.85rem; height:0.85rem;"></i>
+            </button>
+          </div>
+        `;
+      });
+
+      section.innerHTML = `
+        <div class="shopping-dept-title">${deptName}</div>
+        <div class="shopping-items-grid" style="display:flex; flex-direction:column; gap:0.4rem;">
+          ${itemsHTML}
+        </div>
+      `;
+      shoppingListCategories.appendChild(section);
+    });
+
+    shoppingModal.classList.remove('hidden');
+  }
+
+  function closeShoppingList() {
+    shoppingModal.classList.add('hidden');
+  }
+
+  closeShoppingModal.addEventListener('click', closeShoppingList);
+  shoppingOverlay.addEventListener('click', closeShoppingList);
+  closeShoppingBtnAction.addEventListener('click', closeShoppingList);
+
+  shoppingListCategories.addEventListener('click', (e) => {
+    const deleteBtn = e.target.closest('.shopping-item-delete-btn');
+    if (deleteBtn) {
+      const name = deleteBtn.getAttribute('data-name');
+      const recipe = state.currentRecipeViewed;
+      if (recipe && Array.isArray(recipe.ingredients)) {
+        recipe.ingredients = recipe.ingredients.filter(i => i.name !== name);
+        openShoppingList(recipe);
+      }
+    }
+  });
+
+  copyShoppingBtn.addEventListener('click', () => {
+    if (!state.currentRecipeViewed) return;
+    const missingItems = state.currentRecipeViewed.ingredients.filter(i => !i.owned);
+    const categories = {};
+    missingItems.forEach(item => {
+      const dept = item.category || 'Other';
+      if (!categories[dept]) categories[dept] = [];
+      categories[dept].push(item);
+    });
+
+    let copyText = `🛒 Fridge-to-Feast Shopping List for: ${state.currentRecipeViewed.title}\n\n`;
+    Object.keys(categories).forEach(dept => {
+      copyText += `📦 ${dept.toUpperCase()}:\n`;
+      categories[dept].forEach(i => {
+        copyText += `  [ ] ${i.amount} ${i.name}\n`;
+      });
+      copyText += `\n`;
+    });
+
+    navigator.clipboard.writeText(copyText.trim()).then(() => {
+      alert("Shopping list copied!");
+    }).catch(err => {
+      console.error("Clipboard copy failed:", err);
+    });
+  });
+
+  // ==========================================
+  // WEEKLY MEAL PLANNER & SOCIAL CARD LOGIC
+  // ==========================================
+
+  // --- View Switcher (Generator vs Planner) ---
+  navTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const view = tab.getAttribute('data-view');
+      navTabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      if (view === 'planner') {
+        generatorView.classList.add('hidden');
+        plannerView.classList.remove('hidden');
+        renderPlannerGrid();
+      } else {
+        plannerView.classList.add('hidden');
+        generatorView.classList.remove('hidden');
+      }
+    });
+  });
+
+  // --- Pin Modal Managers ---
+  function openPinModal(recipe) {
+    state.tempRecipeToPin = recipe;
+    pinMealModal.classList.remove('hidden');
+  }
+
+  function closePinModal() {
+    state.tempRecipeToPin = null;
+    pinMealModal.classList.add('hidden');
+  }
+
+  function confirmPin() {
+    if (!state.tempRecipeToPin) return;
+    const day = pinDaySelect.value;
+    const slot = pinSlotSelect.value;
+    const key = `${day}-${slot}`;
+
+    state.planner[key] = {
+      title: state.tempRecipeToPin.title,
+      recipe: state.tempRecipeToPin
+    };
+
+    localStorage.setItem('feasts_planner', JSON.stringify(state.planner));
+    closePinModal();
+    renderPlannerGrid();
+    
+    // Switch to planner view
+    const plannerTab = document.querySelector('.nav-tab[data-view="planner"]');
+    if (plannerTab) plannerTab.click();
+  }
+
+  if (confirmPinBtn) confirmPinBtn.addEventListener('click', confirmPin);
+  if (cancelPinBtn) cancelPinBtn.addEventListener('click', closePinModal);
+  if (closePinModalBtn) closePinModalBtn.addEventListener('click', closePinModal);
+
+  // --- Planner Grid Renderer ---
+  function renderPlannerGrid() {
+    let mealCount = 0;
+    const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    const slots = ['breakfast', 'lunch', 'dinner'];
+
+    days.forEach(day => {
+      const dayCard = document.querySelector(`.planner-day-card[data-day="${day}"]`);
+      if (!dayCard) return;
+
+      slots.forEach(slot => {
+        const slotEl = dayCard.querySelector(`.meal-slot[data-slot="${slot}"] .slot-content`);
+        if (!slotEl) return;
+
+        const key = `${day}-${slot}`;
+        const meal = state.planner[key];
+
+        if (meal) {
+          mealCount++;
+          slotEl.classList.remove('empty');
+          slotEl.style.cursor = 'pointer';
+          slotEl.innerHTML = `
+            <span class="meal-title-link" style="flex:1; cursor:pointer;">${meal.title}</span>
+            <button class="remove-meal-btn" data-key="${key}"><i data-lucide="trash-2"></i></button>
+          `;
+        } else {
+          slotEl.classList.add('empty');
+          slotEl.style.cursor = 'pointer';
+          slotEl.innerHTML = `+ Add ${slot.charAt(0).toUpperCase() + slot.slice(1)}`;
+        }
+      });
+    });
+
+    lucide.createIcons();
+
+    if (mealCount > 0) {
+      plannerBadge.textContent = mealCount;
+      plannerBadge.classList.remove('hidden');
+    } else {
+      plannerBadge.classList.add('hidden');
+    }
+  }
+
+  // Remove meal button event listener delegation
+  document.addEventListener('click', (e) => {
+    const removeBtn = e.target.closest('.remove-meal-btn');
+    if (removeBtn) {
+      e.stopPropagation();
+      const key = removeBtn.getAttribute('data-key');
+      delete state.planner[key];
+      localStorage.setItem('feasts_planner', JSON.stringify(state.planner));
+      renderPlannerGrid();
+      return;
+    }
+
+    const filledSlot = e.target.closest('.slot-content:not(.empty)');
+    if (filledSlot) {
+      const slotEl = filledSlot.closest('.meal-slot');
+      const dayCard = filledSlot.closest('.planner-day-card');
+      if (slotEl && dayCard) {
+        const slot = slotEl.getAttribute('data-slot');
+        const day = dayCard.getAttribute('data-day');
+        const key = `${day}-${slot}`;
+        const meal = state.planner[key];
+        if (meal && meal.recipe) {
+          openRecipeDetail(meal.recipe);
+        }
+      }
+      return;
+    }
+
+    const emptySlot = e.target.closest('.slot-content.empty');
+    if (emptySlot) {
+      const generatorTab = document.querySelector('.nav-tab[data-view="generator"]');
+      if (generatorTab) generatorTab.click();
+    }
+  });
+
+  // --- Consolidated Weekly Shopping List ---
+  function generateWeeklyShoppingList() {
+    const missingIngredients = [];
+    const recipeTitles = [];
+
+    Object.values(state.planner).forEach(item => {
+      recipeTitles.push(item.title);
+      if (item.recipe && Array.isArray(item.recipe.ingredients)) {
+        item.recipe.ingredients.forEach(ing => {
+          if (!ing.owned) {
+            missingIngredients.push(ing);
+          }
+        });
+      }
+    });
+
+    if (missingIngredients.length === 0) {
+      alert("No missing ingredients! Your fridge is fully stocked for this week's planned meals. 🥳");
+      return;
+    }
+
+    const consolidated = {};
+    missingIngredients.forEach(item => {
+      const name = item.name.toLowerCase().trim();
+      if (!consolidated[name]) {
+        consolidated[name] = {
+          name: item.name,
+          category: item.category || 'Other',
+          amounts: [item.amount]
+        };
+      } else {
+        consolidated[name].amounts.push(item.amount);
+      }
+    });
+
+    const finalItems = Object.values(consolidated).map(item => {
+      const uniqueAmounts = [...new Set(item.amounts)];
+      return {
+        name: item.name,
+        category: item.category,
+        amount: uniqueAmounts.join(' + '),
+        owned: false
+      };
+    });
+
+    state.currentRecipeViewed = {
+      title: "Consolidated Weekly Planner List",
+      ingredients: finalItems
+    };
+
+    openShoppingList(state.currentRecipeViewed);
+  }
+
+  if (plannerShoppingListBtn) {
+    plannerShoppingListBtn.addEventListener('click', generateWeeklyShoppingList);
+  }
+
+  // --- "Insta-Foodie" Social Share Card Generator ---
+  function openSocialCardModal(recipe) {
+    state.currentRecipeViewed = recipe;
+    socialCardModal.classList.remove('hidden');
+    drawSocialCard(recipe);
+  }
+
+  function closeSocialModal() {
+    socialCardModal.classList.add('hidden');
+  }
+
+  if (closeSocialModalBtn) closeSocialModalBtn.addEventListener('click', closeSocialModal);
+  if (socialOverlayBg) socialOverlayBg.addEventListener('click', closeSocialModal);
+
+  function drawSocialCard(recipe) {
+    const canvas = document.getElementById('social-card-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    // 1. Draw mesh gradient background
+    const grad = ctx.createRadialGradient(300, 150, 50, 300, 300, 350);
+    grad.addColorStop(0, '#312e81'); // Dark Indigo
+    grad.addColorStop(0.5, '#1e1b4b'); // Deep Navy
+    grad.addColorStop(1, '#090514'); // Very Dark Violet
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 600, 600);
+
+    // Glowing blur shapes
+    ctx.fillStyle = 'rgba(139, 92, 246, 0.12)';
+    ctx.beginPath();
+    ctx.arc(100, 100, 150, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(244, 63, 94, 0.08)';
+    ctx.beginPath();
+    ctx.arc(500, 500, 120, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 2. Draw Glassmorphic Card container
+    ctx.fillStyle = 'rgba(17, 24, 39, 0.65)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    ctx.lineWidth = 2;
+    drawRoundedRect(ctx, 40, 40, 520, 520, 20, true, true);
+
+    // 3. Draw Branding Header
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.font = '700 12px "Outfit", sans-serif';
+    ctx.fillText('⚡ FRIDGE-TO-FEAST PREMIUM', 70, 85);
+
+    // 4. Zero Waste Hero Badge
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+    ctx.lineWidth = 1;
+    drawRoundedRect(ctx, 350, 65, 180, 30, 15, true, true);
+    
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = '800 11px "Outfit", sans-serif';
+    ctx.fillText('🌿 ZERO-WASTE HERO', 375, 84);
+
+    // 5. Recipe Title
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 28px "Outfit", sans-serif';
+    const titleY = wrapText(ctx, recipe.title.toUpperCase(), 70, 155, 460, 36);
+
+    // 6. Recipe Stats row
+    const statsY = titleY + 25;
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '600 13px "Inter", sans-serif';
+    
+    const totalTime = recipe.prepTime + recipe.cookTime;
+    const matchPct = Math.round((recipe.ingredients.filter(i => i.owned).length / recipe.ingredients.length) * 100);
+    ctx.fillText(`⏱️ ${totalTime} MINS   |   🔥 ${recipe.calories} KCAL   |   🥗 ${matchPct}% MATCH`, 70, statsY);
+
+    // Divider line
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.beginPath();
+    ctx.moveTo(70, statsY + 18);
+    ctx.lineTo(530, statsY + 18);
+    ctx.stroke();
+
+    // 7. Savings Banner Box
+    const bannerY = statsY + 35;
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
+    ctx.strokeStyle = 'rgba(16, 185, 129, 0.25)';
+    ctx.lineWidth = 1;
+    drawRoundedRect(ctx, 70, bannerY, 460, 85, 12, true, true);
+
+    const savedAmount = (recipe.ingredients.filter(i => i.owned).length * 1.50).toFixed(2);
+    ctx.fillStyle = '#10b981';
+    ctx.font = '800 22px "Outfit", sans-serif';
+    ctx.fillText(`SAVED $${savedAmount} FROM WASTE!`, 90, bannerY + 38);
+    ctx.fillStyle = '#a7f3d0';
+    ctx.font = '500 11px "Inter", sans-serif';
+    ctx.fillText('Estimated savings based on ingredients rescued from going to waste.', 90, bannerY + 60);
+
+    // 8. Ingredients List
+    const ingY = bannerY + 115;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 15px "Outfit", sans-serif';
+    ctx.fillText('RESCUED INGREDIENTS:', 70, ingY);
+
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '500 12.5px "Inter", sans-serif';
+    const ownedIng = recipe.ingredients.filter(i => i.owned).map(i => i.name);
+    let ingredientsListText = ownedIng.slice(0, 6).join(', ');
+    if (ownedIng.length > 6) ingredientsListText += ` and ${ownedIng.length - 6} more...`;
+    
+    wrapText(ctx, ingredientsListText, 70, ingY + 22, 460, 18);
+
+    // 9. Footer Branding
+    ctx.fillStyle = '#64748b';
+    ctx.font = '600 11px "Outfit", sans-serif';
+    ctx.fillText('GENERATED WITH FRIDGE-TO-FEAST AI', 70, 525);
+  }
+
+  function drawRoundedRect(ctx, x, y, width, height, radius, fill, stroke) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
+  function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+    const words = text.split(' ');
+    let line = '';
+    let currentY = y;
+
+    for (let n = 0; n < words.length; n++) {
+      let testLine = line + words[n] + ' ';
+      let metrics = ctx.measureText(testLine);
+      let testWidth = metrics.width;
+      if (testWidth > maxWidth && n > 0) {
+        ctx.fillText(line, x, currentY);
+        line = words[n] + ' ';
+        currentY += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    ctx.fillText(line, x, currentY);
+    return currentY;
+  }
+
+  function downloadSocialCard() {
+    const canvas = document.getElementById('social-card-canvas');
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = `fridge_to_feast_${state.currentRecipeViewed ? state.currentRecipeViewed.title.toLowerCase().replace(/ /g, '_') : 'card'}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  }
+
+  if (downloadSocialCardBtn) {
+    downloadSocialCardBtn.addEventListener('click', downloadSocialCard);
+  }
+
+  // ==========================================
+  // DASHBOARD WIDGETS & SHARING LINK INTEGRATIONS
+  // ==========================================
+
+  // --- Update Dashboard stats and milestone badges ---
+  function updateDashboardUI() {
+    if (!statMoneyValue || !statWeightValue || !statCo2Value) return;
+
+    // 1. Update text displays
+    statMoneyValue.textContent = `$${state.stats.moneySaved.toFixed(2)}`;
+    statWeightValue.textContent = `${state.stats.weightRescued.toFixed(1)} lbs`;
+    statCo2Value.textContent = `${state.stats.co2Prevented.toFixed(1)} kg`;
+    
+    if (statStreakValue) {
+      statStreakValue.textContent = `${state.stats.streak || 0} Days`;
+      const fireIcon = document.getElementById('streak-fire-icon');
+      if (fireIcon) {
+        if ((state.stats.streak || 0) > 0) {
+          fireIcon.style.animation = 'pulse 1.5s infinite';
+          fireIcon.style.opacity = '1';
+        } else {
+          fireIcon.style.animation = 'none';
+          fireIcon.style.opacity = '0.5';
+        }
+      }
+    }
+
+    // 2. Calculate circle SVG ring offset percentages (dasharray = 138)
+    // Money: max gauge $100
+    const moneyOffset = Math.max(0, 138 - Math.min(1, state.stats.moneySaved / 100) * 138);
+    statMoneyRing.setAttribute('stroke-dashoffset', moneyOffset);
+
+    // Weight: max gauge 50 lbs
+    const weightOffset = Math.max(0, 138 - Math.min(1, state.stats.weightRescued / 50) * 138);
+    statWeightRing.setAttribute('stroke-dashoffset', weightOffset);
+
+    // CO2: max gauge 100 kg
+    const co2Offset = Math.max(0, 138 - Math.min(1, state.stats.co2Prevented / 100) * 138);
+    statCo2Ring.setAttribute('stroke-dashoffset', co2Offset);
+
+    // 3. Update Level Badges based on mealsCooked
+    const meals = state.stats.mealsCooked;
+    let badgeIcon = '🍳';
+    let badgeTitle = 'Kitchen Novice';
+    let badgeDesc = 'Cook 1 meal to level up!';
+
+    if (meals >= 1 && meals < 3) {
+      badgeIcon = '🥗';
+      badgeTitle = 'Eco-Apprentice';
+      badgeDesc = `Rescued ${meals} meals. Cook ${3 - meals} more for Hero rank!`;
+    } else if (meals >= 3 && meals < 6) {
+      badgeIcon = '🌿';
+      badgeTitle = 'Zero-Waste Hero';
+      badgeDesc = `Rescued ${meals} meals. Cook ${6 - meals} more for Alchemist!`;
+    } else if (meals >= 6) {
+      badgeIcon = '🔮';
+      badgeTitle = 'Zero-Waste Alchemist';
+      badgeDesc = `Master Chef Status! Rescued ${meals} meals.`;
+    }
+
+    if (milestoneBadgeIcon) milestoneBadgeIcon.textContent = badgeIcon;
+    if (milestoneBadgeTitle) milestoneBadgeTitle.textContent = badgeTitle;
+    if (milestoneBadgeDesc) milestoneBadgeDesc.textContent = badgeDesc;
+
+    // 4. Update Tomorrow's Leftover Forecast
+    if (forecastBodyContent) {
+      const criticalList = [];
+      Object.values(state.ingredients).forEach(ing => {
+        if (ing.state === 'urgent' || ing.state === 'expiring') {
+          criticalList.push(ing.name);
+        }
+      });
+
+      let forecastHTML = '';
+      if (criticalList.length > 0) {
+        const listStr = criticalList.slice(0, 3).join(', ');
+        const moreCount = criticalList.length > 3 ? ` and ${criticalList.length - 3} other items` : '';
+        forecastHTML = `
+          <div style="display:flex; align-items:center; gap:0.75rem; background:rgba(245, 158, 11, 0.05); border:1px solid rgba(245, 158, 11, 0.2); padding:0.75rem; border-radius:var(--radius-md);">
+            <div style="font-size:1.5rem;">🚨</div>
+            <div style="flex:1;">
+              <div style="font-weight:700; color:var(--warning); margin-bottom:0.15rem;">Urgent Ingredients Expiring Soon!</div>
+              <div>You have <strong>${listStr}${moreCount}</strong> that will go to waste shortly. We recommend using them immediately. Click back to the <strong>Feast Maker</strong> tab to generate a custom recipe featuring them!</div>
+            </div>
+          </div>
+        `;
+      } else {
+        forecastHTML = `
+          <div style="display:flex; align-items:center; gap:0.75rem; background:rgba(16, 185, 129, 0.05); border:1px solid rgba(16, 185, 129, 0.2); padding:0.75rem; border-radius:var(--radius-md);">
+            <div style="font-size:1.5rem;">🎉</div>
+            <div style="flex:1;">
+              <div style="font-weight:700; color:var(--success); margin-bottom:0.15rem;">All Clear!</div>
+              <div>No expiring or urgent food items detected in your pantry! Great job keeping up with your zero-waste goal this week.</div>
+            </div>
+          </div>
+        `;
+      }
+      forecastBodyContent.innerHTML = forecastHTML;
+    }
+  }
+
+  // --- Share Weekly dinner schedule ---
+  function shareWeeklyPlan() {
+    try {
+      const planData = JSON.stringify(state.planner);
+      const b64 = btoa(unescape(encodeURIComponent(planData)));
+      const shareUrl = `${window.location.origin}${window.location.pathname}?import_plan=${b64}`;
+      
+      navigator.clipboard.writeText(shareUrl).then(() => {
+        alert("🔗 Shareable Weekly Planner link copied to clipboard! Share it with your friends or family!");
+      }).catch(err => {
+        console.error("Clipboard copy failed:", err);
+        alert(`Failed to copy link automatically. Here is the URL:\n${shareUrl}`);
+      });
+    } catch (e) {
+      console.error(e);
+      alert("Failed to package the dinner plan.");
+    }
+  }
+
+  if (plannerShareBtn) {
+    plannerShareBtn.addEventListener('click', shareWeeklyPlan);
+  }
+
+  // --- Query parameters importer check ---
+  function checkSharedPlanImport() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const importPlan = urlParams.get('import_plan');
+    if (importPlan) {
+      try {
+        const decoded = decodeURIComponent(escape(atob(importPlan)));
+        const parsed = JSON.parse(decoded);
+        if (parsed && typeof parsed === 'object') {
+          state.planner = parsed;
+          localStorage.setItem('feasts_planner', JSON.stringify(state.planner));
+          
+          // Re-render
+          renderPlannerGrid();
+          updateDashboardUI();
+          
+          alert("📅 Weekly Dinner Plan successfully imported and loaded! 🥳");
+          
+          // Clear query params cleanly from url address bar without refresh
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      } catch (err) {
+        console.error("Failed to decode plan import:", err);
+        alert("Failed to import dinner plan. The share link might be corrupted.");
+      }
+    }
+  }
+
+  // --- Button Rate-Limit Cooldown Timer ---
+  function startGenerateCooldown(seconds) {
+    const originalText = generateRecipesBtn.innerHTML;
+    generateRecipesBtn.disabled = true;
+    
+    let current = seconds;
+    const interval = setInterval(() => {
+      current--;
+      if (current <= 0) {
+        clearInterval(interval);
+        generateRecipesBtn.disabled = false;
+        generateRecipesBtn.innerHTML = originalText;
+      } else {
+        generateRecipesBtn.innerHTML = `<i data-lucide="clock"></i> Cooldown: Wait ${current}s`;
+        lucide.createIcons();
+      }
+    }, 1000);
+    
+    generateRecipesBtn.innerHTML = `<i data-lucide="clock"></i> Cooldown: Wait ${current}s`;
+    lucide.createIcons();
+  }
+
+  // --- SMART SWAPS DIRECTORY ---
+  const SMART_SWAPS = {
+    'cilantro': [
+      { name: 'flat-leaf parsley', match: 90 },
+      { name: 'mint leaves & lime zest', match: 85 }
+    ],
+    'coriander': [
+      { name: 'flat-leaf parsley', match: 90 },
+      { name: 'mint leaves & lime zest', match: 85 }
+    ],
+    'heavy cream': [
+      { name: 'coconut milk', match: 88 },
+      { name: 'milk & melted butter', match: 82 }
+    ],
+    'egg': [
+      { name: 'applesauce (1/4 cup)', match: 85 },
+      { name: 'flaxseed meal (1 tbsp + 3 tbsp water)', match: 90 }
+    ],
+    'eggs': [
+      { name: 'applesauce (1/4 cup)', match: 85 },
+      { name: 'flaxseed meal (1 tbsp + 3 tbsp water)', match: 90 }
+    ],
+    'butter': [
+      { name: 'olive oil', match: 85 },
+      { name: 'coconut oil', match: 88 }
+    ],
+    'avocado': [
+      { name: 'mashed green peas & lime', match: 80 },
+      { name: 'hummus', match: 75 }
+    ],
+    'avocados': [
+      { name: 'mashed green peas & lime', match: 80 },
+      { name: 'hummus', match: 75 }
+    ],
+    'soy sauce': [
+      { name: 'tamari', match: 95 },
+      { name: 'coconut aminos', match: 90 }
+    ],
+    'onion': [
+      { name: 'shallots', match: 90 },
+      { name: 'green onions', match: 80 }
+    ],
+    'chicken': [
+      { name: 'tofu', match: 85 },
+      { name: 'tempeh', match: 80 },
+      { name: 'seitan', match: 82 }
+    ]
+  };
+
+  // --- Plating Modal AR Camera Controls ---
+  async function startPlatingCamera() {
+    const video = document.getElementById('plating-video');
+    const canvas = document.getElementById('plating-canvas');
+    const camBtn = document.getElementById('plating-camera-btn');
+    if (!video || !canvas || !camBtn) return;
+
+    if (state.platingCamActive) {
+      stopPlatingCamera();
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: "environment" } 
+      });
+      state.platingCamStream = stream;
+      video.srcObject = stream;
+      video.style.display = 'block';
+      canvas.style.opacity = '0.65';
+      state.platingCamActive = true;
+      camBtn.innerHTML = `<i data-lucide="camera-off"></i> Close Plating AR Camera`;
+      lucide.createIcons();
+    } catch (err) {
+      console.error("Camera access failed:", err);
+      alert("Failed to access camera. Please check your camera permissions in Chrome settings.");
+    }
+  }
+
+  function stopPlatingCamera() {
+    const video = document.getElementById('plating-video');
+    const canvas = document.getElementById('plating-canvas');
+    const camBtn = document.getElementById('plating-camera-btn');
+    
+    if (state.platingCamStream) {
+      state.platingCamStream.getTracks().forEach(track => track.stop());
+      state.platingCamStream = null;
+    }
+
+    if (video) {
+      video.srcObject = null;
+      video.style.display = 'none';
+    }
+    if (canvas) {
+      canvas.style.opacity = '1';
+    }
+    state.platingCamActive = false;
+    if (camBtn) {
+      camBtn.innerHTML = `<i data-lucide="camera"></i> Open Plating AR Camera`;
+      lucide.createIcons();
+    }
+  }
+
+  // --- Chef Chat Conversational Speech Handler ---
+  async function handleChefConversationalQuestion(question) {
+    const statusText = document.getElementById('modal-voice-status-text');
+    if (statusText) {
+      statusText.textContent = "🎙️ Chef is thinking...";
+    }
+
+    try {
+      const prompt = `You are a helpful, expert Michelin-starred kitchen companion. 
+        The user is currently cooking "${state.currentRecipeViewed ? state.currentRecipeViewed.title : 'a dish'}".
+        They just asked you this question while cooking: "${question}".
+        Provide a very brief, friendly, and helpful kitchen answer in exactly 1 or 2 sentences. Keep it under 30 words so it is easy to read and speak back.`;
+
+      let result = null;
+      const isHostedServer = state.isServerMode || window.location.hostname.includes('netlify.app') || window.location.pathname.startsWith('/.netlify/');
+      let useClientKey = !isHostedServer;
+
+      if (isHostedServer) {
+        try {
+          const apiPath = getApiPath('chef-chat');
+          const response = await fetch(apiPath, {
+            method: 'POST',
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({
+              recipeTitle: state.currentRecipeViewed ? state.currentRecipeViewed.title : 'a dish',
+              question: question
+            })
+          });
+
+          if (!response.ok) throw new Error("Server failed");
+          const data = await response.json();
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (rawText) {
+            result = JSON.parse(rawText.trim());
+          } else {
+            result = data;
+          }
+        } catch (serverErr) {
+          console.warn("Backend chef-chat failed. Falling back to local client key:", serverErr);
+          useClientKey = true;
+        }
+      }
+
+      if (useClientKey) {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-goog-api-key': state.apiKey
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "OBJECT",
+                properties: {
+                  answer: { type: "STRING" }
+                },
+                required: ["answer"]
+              }
+            }
+          })
+        });
+
+        if (!response.ok) throw new Error("API call failed.");
+        const data = await response.json();
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawText) {
+          result = JSON.parse(rawText.trim());
+        }
+      }
+
+      if (result && result.answer) {
+          if (statusText) {
+            statusText.textContent = `🗣️ Chef: "${result.answer}"`;
+          }
+          speakText(result.answer);
+          
+          // Re-enable instructions text helper after 8 seconds
+          setTimeout(() => {
+            if (state.voiceAssistantActive && statusText) {
+              statusText.textContent = 'Voice active. Say "Read step", "Next step", or "Start timer"';
+            }
+          }, 8000);
+        }
+    } catch (e) {
+      console.error(e);
+      if (statusText) {
+        statusText.textContent = "Voice active. Say 'Read step', 'Next step', or 'Start timer'";
+      }
+      speakText("Sorry, I couldn't connect to answer your question.");
+    }
+  }
+
+  // Initialize Supabase on page load
+  initSupabase();
+});

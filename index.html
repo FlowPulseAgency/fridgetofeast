@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fridge-to-Feast | AI Recipe & Meal Planner</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- CSS Stylesheet -->
+  <link rel="stylesheet" href="style.css?v=1783262077">
+  <!-- Lucide Icons (CDN) -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Supabase Client JS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <!-- Ambient background glow elements -->
+  <div class="bg-glow glow-1"></div>
+  <div class="bg-glow glow-2"></div>
+  <div class="bg-glow glow-3"></div>
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <i data-lucide="chef-hat" class="logo-icon"></i>
+      <span>Fridge<span class="text-gradient">To</span>Feast</span>
+    </div>
+
+    <!-- Main View Navigation -->
+    <nav class="main-nav">
+      <button class="nav-tab active" data-view="generator">
+        <i data-lucide="cooking-pot"></i> <span>Feast Maker</span>
+      </button>
+      <button class="nav-tab" data-view="planner">
+        <i data-lucide="calendar"></i> <span>Weekly Planner</span>
+        <span id="planner-badge" class="planner-badge hidden">0</span>
+      </button>
+    </nav>
+
+    <div class="header-actions">
+      <button id="premium-header-btn" class="btn btn-accent btn-sm header-premium-btn">
+        <i data-lucide="crown"></i> Go Premium
+      </button>
+      <button id="auth-login-btn" class="btn btn-primary btn-sm header-auth-btn">
+        <i data-lucide="log-in"></i> Sign In
+      </button>
+      <div id="user-profile-dropdown" class="user-profile-dropdown hidden">
+        <button id="user-profile-btn" class="profile-btn">
+          <i data-lucide="user" class="profile-user-icon"></i>
+          <span id="user-display-name" class="user-display-name">...</span>
+          <i data-lucide="chevron-down" class="dropdown-chevron"></i>
+        </button>
+        <div class="dropdown-menu">
+          <div class="dropdown-header">
+            <div id="dropdown-email" class="user-email">...</div>
+            <div id="dropdown-status" class="user-status-badge">Free</div>
+          </div>
+          <hr class="dropdown-divider">
+          <button id="dropdown-upgrade-btn" class="dropdown-item">
+            <i data-lucide="crown" class="icon-premium"></i> Go Premium
+          </button>
+          <button id="auth-logout-btn" class="dropdown-item text-danger">
+            <i data-lucide="log-out"></i> Sign Out
+          </button>
+        </div>
+      </div>
+      <button id="settings-btn" class="icon-btn" title="API Settings">
+        <i data-lucide="settings"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="container">
+    
+    <!-- Premium Success Banner -->
+    <div id="premium-success-banner" class="glass-panel success-banner hidden">
+      <div class="alert-content">
+        <i data-lucide="party-popper" class="alert-icon text-success"></i>
+        <div>
+          <h3>Welcome to Premium! 👑</h3>
+          <p>Your subscription is active. All limits are removed, camera vision is active, and kitchen timers are fully unlocked.</p>
+        </div>
+      </div>
+      <button id="dismiss-success-btn" class="icon-btn"><i data-lucide="x"></i></button>
+    </div>
+
+    <!-- API Key Notice Alert -->
+    <div id="api-key-banner" class="glass-panel alert-banner hidden">
+      <div class="alert-content">
+        <i data-lucide="key-round" class="alert-icon text-accent"></i>
+        <div>
+          <h3>Local Mode API Key Required</h3>
+          <p>No backend server detected. Please click the settings button in the top right to paste your free Google AI Studio key to generate recipes locally.</p>
+        </div>
+      </div>
+      <button id="setup-key-btn" class="btn btn-primary btn-sm">Set Up API Key</button>
+    </div>
+
+    <!-- Recipe Generator Main View -->
+    <div id="generator-view">
+      <div class="app-layout">
+      <!-- Input Panel (Left) -->
+      <section class="glass-panel input-panel">
+        <div class="panel-header">
+          <i data-lucide="camera" class="panel-icon"></i>
+          <h2>Capture or Upload Fridge</h2>
+        </div>
+
+        <!-- Tab Selector -->
+        <div class="input-tabs">
+          <button class="tab-btn active" data-tab="upload">
+            <i data-lucide="upload-cloud"></i> Upload Photo <i data-lucide="lock" class="tab-lock-icon hidden"></i>
+          </button>
+          <button class="tab-btn" data-tab="camera">
+            <i data-lucide="camera"></i> Live Camera <i data-lucide="lock" class="tab-lock-icon hidden"></i>
+          </button>
+          <button class="tab-btn" data-tab="manual">
+            <i data-lucide="keyboard"></i> Type List
+          </button>
+        </div>
+
+        <!-- Tab Contents -->
+        <div class="tab-contents">
+          <!-- Upload Tab -->
+          <div class="tab-pane active" id="pane-upload">
+            <div class="upload-dropzone" id="dropzone">
+              <input type="file" id="file-input" accept="image/*" class="file-input">
+              <i data-lucide="image" class="dropzone-icon"></i>
+              <p class="dropzone-text">Drag & drop your fridge photo here or <span class="text-accent cursor-pointer">browse</span></p>
+              <span class="file-info" id="file-info-text">Supports JPG, PNG, WebP</span>
+            </div>
+            <div id="upload-preview-container" class="image-preview-container hidden">
+              <img id="upload-preview" src="" alt="Fridge Preview">
+              <button id="clear-upload-btn" class="icon-btn clear-btn"><i data-lucide="x"></i></button>
+            </div>
+          </div>
+
+          <!-- Camera Tab -->
+          <div class="tab-pane" id="pane-camera">
+            <div class="camera-container">
+              <video id="camera-feed" autoplay playsinline class="camera-feed hidden"></video>
+              <div id="camera-placeholder" class="camera-placeholder">
+                <i data-lucide="video" class="placeholder-icon"></i>
+                <p>Camera not started</p>
+                <button id="start-camera-btn" class="btn btn-secondary btn-sm">Start Camera</button>
+              </div>
+              <canvas id="camera-canvas" class="hidden"></canvas>
+              <div id="camera-preview-container" class="image-preview-container hidden">
+                <img id="camera-preview" src="" alt="Captured Image">
+              </div>
+            </div>
+            <div class="camera-controls hidden" id="camera-controls">
+              <button id="capture-btn" class="btn btn-primary"><i data-lucide="aperture"></i> Take Photo</button>
+              <button id="retake-btn" class="btn btn-secondary hidden"><i data-lucide="rotate-ccw"></i> Retake</button>
+            </div>
+          </div>
+
+          <!-- Manual Input Tab -->
+          <div class="tab-pane" id="pane-manual">
+            <div class="manual-input-group">
+              <p class="input-instruction">Type your ingredients one by one or separated by commas.</p>
+              <div class="input-with-button">
+                <input type="text" id="manual-input" placeholder="e.g., tomatoes, chicken, onion">
+                <button id="add-manual-btn" class="btn btn-secondary"><i data-lucide="plus"></i> Add</button>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Vision Locked Overlay (covers only tab contents area, not tab buttons) -->
+          <div id="vision-locked-overlay" class="locked-overlay hidden">
+            <div class="lock-box">
+              <i data-lucide="lock" class="lock-box-icon"></i>
+              <h3>Vision Scanning Locked</h3>
+              <p>Scanning food photos with AI requires a Premium subscription.</p>
+              <button id="unlock-vision-btn" class="btn btn-accent btn-sm">Unlock Premium 👑</button>
+            </div>
+          </div>
+        </div>
+
+        <button id="analyze-img-btn" class="btn btn-primary btn-block hidden">
+          <i data-lucide="sparkles"></i> Scan Photo for Ingredients
+        </button>
+      </section>
+
+      <!-- Options & Ingredients Drawer (Right) -->
+      <section class="glass-panel drawer-panel">
+        <div class="panel-header">
+          <i data-lucide="list-checks" class="panel-icon"></i>
+          <h2>Ingredients & Preferences</h2>
+        </div>
+
+        <!-- Food Waste Savings Tracker -->
+        <div class="savings-widget" id="savings-widget">
+          <div class="savings-icon-container">
+            <i data-lucide="piggy-bank" class="savings-icon"></i>
+          </div>
+          <div class="savings-text-container">
+            <span class="savings-label">Money Saved From Waste</span>
+            <span class="savings-value" id="savings-value">$0.00</span>
+          </div>
+        </div>
+
+        <div class="ingredient-box">
+          <div class="ingredient-box-header">
+            <label class="section-label">Your Ingredients</label>
+            <span class="count-badge" id="ingredient-count">0</span>
+          </div>
+          <div class="expiry-tip" id="expiry-tip">💡 Tip: Tap tags to cycle expiry (🟢 Fresh → 🟡 Expiring → 🔴 Urgent)</div>
+          <div class="tags-container" id="ingredients-list">
+            <p class="placeholder-text" id="empty-ingredients-text">No ingredients added yet. Add ingredients in the left panel.</p>
+          </div>
+        </div>
+
+        <div class="preferences-box">
+          <label class="section-label">Dietary Options</label>
+          <div class="diet-grid">
+            <label class="pill-checkbox">
+              <input type="checkbox" name="diet" value="vegetarian">
+              <span>Vegetarian</span>
+            </label>
+            <label class="pill-checkbox">
+              <input type="checkbox" name="diet" value="vegan">
+              <span>Vegan</span>
+            </label>
+            <label class="pill-checkbox">
+              <input type="checkbox" name="diet" value="gluten-free">
+              <span>Gluten-Free</span>
+            </label>
+            <label class="pill-checkbox">
+              <input type="checkbox" name="diet" value="keto">
+              <span>Keto</span>
+            </label>
+            <label class="pill-checkbox">
+              <input type="checkbox" name="diet" value="dairy-free">
+              <span>Dairy-Free</span>
+            </label>
+            <label class="pill-checkbox">
+              <input type="checkbox" name="diet" value="paleo">
+              <span>Paleo</span>
+            </label>
+          </div>
+
+          <!-- Spice Rack & Pantry Staples Cabinet -->
+          <div class="spice-cabinet-box">
+            <div class="spice-cabinet-header spice-toggle-active" id="spice-toggle-btn">
+              <span class="section-label"><i data-lucide="cup-straw"></i> Spice Rack & Staples</span>
+              <i data-lucide="chevron-down" class="toggle-arrow" id="spice-toggle-arrow"></i>
+            </div>
+            <div class="spice-cabinet-content" id="spice-cabinet-content">
+              <p class="spice-instruction">Select the spices and staples you have at home:</p>
+              
+              <div class="spice-grid">
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="salt">
+                  <span>Salt</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="black pepper">
+                  <span>Pepper</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="garlic powder">
+                  <span>Garlic Powder</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="onion powder">
+                  <span>Onion Powder</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="oregano">
+                  <span>Oregano</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="cumin">
+                  <span>Cumin</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="chili powder">
+                  <span>Chili Powder</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="paprika">
+                  <span>Paprika</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="cayenne">
+                  <span>Cayenne</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="soy sauce">
+                  <span>Soy Sauce</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="olive oil">
+                  <span>Olive Oil</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="butter">
+                  <span>Butter</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="ginger">
+                  <span>Ginger</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="cinnamon">
+                  <span>Cinnamon</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="rosemary">
+                  <span>Rosemary</span>
+                </label>
+                <label class="spice-checkbox">
+                  <input type="checkbox" name="spice" value="thyme">
+                  <span>Thyme</span>
+                </label>
+              </div>
+
+              <div class="custom-spice-group">
+                <label for="custom-spice-input" class="subsection-label">Add Custom Spice/Staple</label>
+                <div class="input-with-button">
+                  <input type="text" id="custom-spice-input" placeholder="e.g., curry, sriracha">
+                  <button id="add-custom-spice-btn" class="btn btn-secondary btn-sm"><i data-lucide="plus"></i> Add</button>
+                </div>
+                <div class="custom-spices-container" id="custom-spices-list"></div>
+              </div>
+            </div>
+          </div>
+
+          <label class="section-label margin-top">Cooking Style</label>
+          <div class="preference-row">
+            <div class="select-group">
+              <label for="meal-type">Meal Type</label>
+              <select id="meal-type">
+                <option value="any">Any Meal</option>
+                <option value="breakfast">Breakfast</option>
+                <option value="lunch">Lunch</option>
+                <option value="dinner">Dinner</option>
+                <option value="snack">Snack</option>
+              </select>
+            </div>
+            <div class="select-group">
+              <label for="prep-time">Max Cooking Time</label>
+              <select id="prep-time">
+                <option value="any">Any time</option>
+                <option value="15">Under 15 mins</option>
+                <option value="30">Under 30 mins</option>
+                <option value="45">Under 45 mins</option>
+                <option value="60">Under 60 mins</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="button-footer">
+          <div class="limit-status hidden" id="free-limit-status">
+            Free usage: <span id="limit-remaining">3</span>/3 generations remaining today
+          </div>
+          <button id="generate-recipes-btn" class="btn btn-accent btn-block" disabled>
+            <i data-lucide="cooking-pot"></i> Generate Feast Recipes
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="glass-panel loading-panel hidden">
+      <div class="loader-content">
+        <div class="cooking-spinner">
+          <div class="pot">
+            <div class="lid"></div>
+            <div class="pot-body"></div>
+          </div>
+          <div class="bubbles">
+            <div class="bubble"></div>
+            <div class="bubble"></div>
+            <div class="bubble"></div>
+            <div class="bubble"></div>
+          </div>
+        </div>
+        <h2 id="loading-title">Assembling Recipes...</h2>
+        <p id="loading-tip" class="loading-tip">AI is planning your culinary creations.</p>
+        <span class="loading-warning-note">💡 Note: Assembling custom matching recipes can take up to 1 minute. Please do not close this window.</span>
+      </div>
+    </div>
+
+    <!-- Results Section -->
+    <section id="results-section" class="results-section hidden">
+      <div class="section-divider">
+        <span>Chef's AI Recommendations</span>
+      </div>
+      <div class="recipes-grid" id="recipes-grid"></div>
+    </section>
+    </div> <!-- End generator-view -->
+
+    <!-- Weekly Meal Planner View -->
+    <div id="planner-view" class="hidden">
+      <div class="planner-header-row">
+        <div class="planner-title">
+          <i data-lucide="calendar" class="panel-icon text-accent"></i>
+          <h2>Weekly Meal Planner</h2>
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button id="planner-share-btn" class="btn btn-secondary">
+            <i data-lucide="share-2"></i> Share Plan 🔗
+          </button>
+          <button id="planner-shopping-list-btn" class="btn btn-accent">
+            <i data-lucide="shopping-basket"></i> Weekly Shopping List 🛒
+          </button>
+        </div>
+      </div>
+
+      <!-- Zero-Waste Impact & Kitchen Milestones Dashboard -->
+      <div class="glass-panel stats-dashboard" style="margin-bottom: 2rem; padding: 1.25rem;">
+        <div class="dashboard-header" style="display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem; border-bottom: 1px solid var(--border-color); padding-bottom:0.5rem;">
+          <i data-lucide="award" class="text-success" style="width:1.35rem; height:1.35rem; stroke: var(--success);"></i>
+          <h3 style="font-size:1.05rem; font-weight:700; margin:0; font-family:var(--font-heading);">Zero-Waste Impact & Kitchen Milestones</h3>
+        </div>
+        <div class="stats-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:1rem;">
+          <div class="stat-card" style="background:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:1rem; display:flex; align-items:center; gap:1rem;">
+            <div class="stat-circle-container" style="position:relative; width:50px; height:50px;">
+              <svg width="50" height="50" style="transform: rotate(-90deg);">
+                <circle cx="25" cy="25" r="22" stroke="rgba(255,255,255,0.05)" stroke-width="4" fill="transparent"/>
+                <circle id="stat-money-ring" cx="25" cy="25" r="22" stroke="var(--gold)" stroke-width="4" fill="transparent" stroke-dasharray="138" stroke-dashoffset="0" style="transition: stroke-dashoffset 0.5s ease-out;"/>
+              </svg>
+              <div style="position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-size:0.85rem; font-weight:800; color:var(--gold);">💰</div>
+            </div>
+            <div class="stat-info">
+              <h4 style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; margin:0; letter-spacing:0.05em;">Money Saved</h4>
+              <p id="stat-money-value" style="font-size:1.15rem; font-weight:800; margin:0; color:#fff;">$0.00</p>
+            </div>
+          </div>
+
+          <div class="stat-card" style="background:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:1rem; display:flex; align-items:center; gap:1rem;">
+            <div class="stat-circle-container" style="position:relative; width:50px; height:50px;">
+              <svg width="50" height="50" style="transform: rotate(-90deg);">
+                <circle cx="25" cy="25" r="22" stroke="rgba(255,255,255,0.05)" stroke-width="4" fill="transparent"/>
+                <circle id="stat-weight-ring" cx="25" cy="25" r="22" stroke="var(--primary)" stroke-width="4" fill="transparent" stroke-dasharray="138" stroke-dashoffset="0" style="transition: stroke-dashoffset 0.5s ease-out;"/>
+              </svg>
+              <div style="position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-size:0.85rem; font-weight:800; color:var(--primary);">🥦</div>
+            </div>
+            <div class="stat-info">
+              <h4 style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; margin:0; letter-spacing:0.05em;">Food Rescued</h4>
+              <p id="stat-weight-value" style="font-size:1.15rem; font-weight:800; margin:0; color:#fff;">0.0 lbs</p>
+            </div>
+          </div>
+
+          <div class="stat-card" style="background:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:1rem; display:flex; align-items:center; gap:1rem;">
+            <div class="stat-circle-container" style="position:relative; width:50px; height:50px;">
+              <svg width="50" height="50" style="transform: rotate(-90deg);">
+                <circle cx="25" cy="25" r="22" stroke="rgba(255,255,255,0.05)" stroke-width="4" fill="transparent"/>
+                <circle id="stat-co2-ring" cx="25" cy="25" r="22" stroke="var(--success)" stroke-width="4" fill="transparent" stroke-dasharray="138" stroke-dashoffset="0" style="transition: stroke-dashoffset 0.5s ease-out;"/>
+              </svg>
+              <div style="position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-size:0.85rem; font-weight:800; color:var(--success);">🌱</div>
+            </div>
+            <div class="stat-info">
+              <h4 style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; margin:0; letter-spacing:0.05em;">CO2 Offset</h4>
+              <p id="stat-co2-value" style="font-size:1.15rem; font-weight:800; margin:0; color:#fff;">0.0 kg</p>
+            </div>
+          </div>
+
+          <div class="stat-card" style="background:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:1rem; display:flex; align-items:center; gap:1rem;">
+            <div style="font-size:1.8rem;" id="streak-fire-icon">🔥</div>
+            <div class="stat-info">
+              <h4 style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; margin:0; letter-spacing:0.05em;">Cooking Streak</h4>
+              <p id="stat-streak-value" style="font-size:1.15rem; font-weight:800; margin:0; color:var(--accent);">0 Days</p>
+            </div>
+          </div>
+
+          <div class="stat-card badge-milestone-card" style="background:linear-gradient(135deg, rgba(139, 92, 246, 0.08) 0%, rgba(244, 63, 94, 0.04) 100%); border:1px solid rgba(139, 92, 246, 0.2); border-radius:var(--radius-md); padding:1rem; display:flex; align-items:center; gap:1rem;">
+            <div id="milestone-badge-icon" style="font-size:1.7rem;">🍳</div>
+            <div class="stat-info" style="flex:1;">
+              <h4 id="milestone-badge-title" style="font-size:0.85rem; font-weight:800; margin:0; color:var(--gold);">Kitchen Novice</h4>
+              <p id="milestone-badge-desc" style="font-size:0.72rem; color:var(--text-secondary); margin:0; line-height:1.2; margin-top:0.15rem;">Cook 1 meal to level up!</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7 Day Grid -->
+      <div class="planner-grid">
+        <!-- Monday -->
+        <div class="planner-day-card" data-day="monday">
+          <div class="day-card-header">Monday</div>
+          <div class="day-card-body">
+            <div class="meal-slot" data-slot="breakfast">
+              <span class="slot-label">Breakfast</span>
+              <div class="slot-content empty">+ Add Breakfast</div>
+            </div>
+            <div class="meal-slot" data-slot="lunch">
+              <span class="slot-label">Lunch</span>
+              <div class="slot-content empty">+ Add Lunch</div>
+            </div>
+            <div class="meal-slot" data-slot="dinner">
+              <span class="slot-label">Dinner</span>
+              <div class="slot-content empty">+ Add Dinner</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tuesday -->
+        <div class="planner-day-card" data-day="tuesday">
+          <div class="day-card-header">Tuesday</div>
+          <div class="day-card-body">
+            <div class="meal-slot" data-slot="breakfast">
+              <span class="slot-label">Breakfast</span>
+              <div class="slot-content empty">+ Add Breakfast</div>
+            </div>
+            <div class="meal-slot" data-slot="lunch">
+              <span class="slot-label">Lunch</span>
+              <div class="slot-content empty">+ Add Lunch</div>
+            </div>
+            <div class="meal-slot" data-slot="dinner">
+              <span class="slot-label">Dinner</span>
+              <div class="slot-content empty">+ Add Dinner</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Wednesday -->
+        <div class="planner-day-card" data-day="wednesday">
+          <div class="day-card-header">Wednesday</div>
+          <div class="day-card-body">
+            <div class="meal-slot" data-slot="breakfast">
+              <span class="slot-label">Breakfast</span>
+              <div class="slot-content empty">+ Add Breakfast</div>
+            </div>
+            <div class="meal-slot" data-slot="lunch">
+              <span class="slot-label">Lunch</span>
+              <div class="slot-content empty">+ Add Lunch</div>
+            </div>
+            <div class="meal-slot" data-slot="dinner">
+              <span class="slot-label">Dinner</span>
+              <div class="slot-content empty">+ Add Dinner</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Thursday -->
+        <div class="planner-day-card" data-day="thursday">
+          <div class="day-card-header">Thursday</div>
+          <div class="day-card-body">
+            <div class="meal-slot" data-slot="breakfast">
+              <span class="slot-label">Breakfast</span>
+              <div class="slot-content empty">+ Add Breakfast</div>
+            </div>
+            <div class="meal-slot" data-slot="lunch">
+              <span class="slot-label">Lunch</span>
+              <div class="slot-content empty">+ Add Lunch</div>
+            </div>
+            <div class="meal-slot" data-slot="dinner">
+              <span class="slot-label">Dinner</span>
+              <div class="slot-content empty">+ Add Dinner</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Friday -->
+        <div class="planner-day-card" data-day="friday">
+          <div class="day-card-header">Friday</div>
+          <div class="day-card-body">
+            <div class="meal-slot" data-slot="breakfast">
+              <span class="slot-label">Breakfast</span>
+              <div class="slot-content empty">+ Add Breakfast</div>
+            </div>
+            <div class="meal-slot" data-slot="lunch">
+              <span class="slot-label">Lunch</span>
+              <div class="slot-content empty">+ Add Lunch</div>
+            </div>
+            <div class="meal-slot" data-slot="dinner">
+              <span class="slot-label">Dinner</span>
+              <div class="slot-content empty">+ Add Dinner</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Saturday -->
+        <div class="planner-day-card" data-day="saturday">
+          <div class="day-card-header">Saturday</div>
+          <div class="day-card-body">
+            <div class="meal-slot" data-slot="breakfast">
+              <span class="slot-label">Breakfast</span>
+              <div class="slot-content empty">+ Add Breakfast</div>
+            </div>
+            <div class="meal-slot" data-slot="lunch">
+              <span class="slot-label">Lunch</span>
+              <div class="slot-content empty">+ Add Lunch</div>
+            </div>
+            <div class="meal-slot" data-slot="dinner">
+              <span class="slot-label">Dinner</span>
+              <div class="slot-content empty">+ Add Dinner</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sunday -->
+        <div class="planner-day-card" data-day="sunday">
+          <div class="day-card-header">Sunday</div>
+          <div class="day-card-body">
+            <div class="meal-slot" data-slot="breakfast">
+              <span class="slot-label">Breakfast</span>
+              <div class="slot-content empty">+ Add Breakfast</div>
+            </div>
+            <div class="meal-slot" data-slot="lunch">
+              <span class="slot-label">Lunch</span>
+              <div class="slot-content empty">+ Add Lunch</div>
+            </div>
+            <div class="meal-slot" data-slot="dinner">
+              <span class="slot-label">Dinner</span>
+              <div class="slot-content empty">+ Add Dinner</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Leftover Forecast Panel -->
+      <div class="glass-panel forecast-dashboard" style="margin-top: 2rem; padding: 1.25rem;">
+        <div class="dashboard-header" style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem; border-bottom: 1px solid var(--border-color); padding-bottom:0.5rem;">
+          <i data-lucide="compass" class="text-accent" style="width:1.25rem; height:1.25rem; stroke: var(--accent);"></i>
+          <h3 style="font-size:1.05rem; font-weight:700; margin:0; font-family:var(--font-heading);">Tomorrow's Leftover Forecast 🔮</h3>
+        </div>
+        <div id="forecast-body-content" style="font-size:0.85rem; color:var(--text-secondary); line-height:1.5;">
+          <!-- Will be dynamically populated with expiring ingredients recommendations -->
+        </div>
+      </div>
+    </div> <!-- End planner-view -->
+  </main>
+
+  <!-- Pin Meal Modal -->
+  <div id="pin-meal-modal" class="modal hidden">
+    <div class="modal-overlay" id="pin-overlay-bg"></div>
+    <div class="modal-content glass-panel settings-content">
+      <button class="icon-btn modal-close" id="close-pin-modal"><i data-lucide="x"></i></button>
+      <div class="settings-desc" style="margin-top: 1rem;">
+        <h2 style="font-family: var(--font-heading); font-weight:800; font-size:1.5rem; margin-bottom:0.25rem;">Add to Weekly Planner</h2>
+        <p>Schedule this recipe on your weekly calendar:</p>
+      </div>
+      
+      <div class="form-group">
+        <label for="pin-day-select">Select Day</label>
+        <select id="pin-day-select" class="form-control">
+          <option value="monday">Monday</option>
+          <option value="tuesday">Tuesday</option>
+          <option value="wednesday">Wednesday</option>
+          <option value="thursday">Thursday</option>
+          <option value="friday">Friday</option>
+          <option value="saturday">Saturday</option>
+          <option value="sunday">Sunday</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="pin-slot-select">Select Meal</label>
+        <select id="pin-slot-select" class="form-control">
+          <option value="breakfast">Breakfast</option>
+          <option value="lunch">Lunch</option>
+          <option value="dinner">Dinner</option>
+        </select>
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancel-pin-btn" class="btn btn-secondary">Cancel</button>
+        <button id="confirm-pin-btn" class="btn btn-accent">
+          <i data-lucide="pin"></i> Add to Calendar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Social Card Modal -->
+  <div id="social-card-modal" class="modal hidden">
+    <div class="modal-overlay" id="social-overlay-bg"></div>
+    <div class="modal-content glass-panel social-card-content">
+      <button class="icon-btn modal-close" id="close-social-modal"><i data-lucide="x"></i></button>
+      <div class="social-header">
+        <i data-lucide="instagram" class="social-title-icon" style="stroke: var(--gold)"></i>
+        <h2 style="font-family: var(--font-heading); font-weight:800; font-size:1.6rem;">Your Culinary Masterpiece Card</h2>
+        <p style="color: var(--text-secondary); font-size:0.85rem; margin-top:0.25rem;">Preview your zero-waste achievement card below, ready to download and share!</p>
+      </div>
+      <div class="social-body" style="margin: 1.5rem 0; display: flex; justify-content: center;">
+        <div class="social-card-canvas-container" style="border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; background: #000; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+          <canvas id="social-card-canvas" width="600" height="600" style="display: block; max-width: 100%; height: auto;"></canvas>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="download-social-card-btn" class="btn btn-accent">
+          <i data-lucide="download-cloud"></i> Download PNG Image
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recipe Details Modal -->
+  <div id="recipe-modal" class="modal hidden">
+    <div class="modal-overlay" id="modal-overlay"></div>
+    <div class="modal-content glass-panel">
+      <button class="icon-btn modal-close" id="close-recipe-modal"><i data-lucide="x"></i></button>
+      <div class="modal-body" id="modal-body-content">
+        <!-- Dyn. populated -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal (API Key) -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-overlay" id="settings-overlay"></div>
+    <div class="modal-content glass-panel settings-content">
+      <button class="icon-btn modal-close" id="close-settings-modal"><i data-lucide="x"></i></button>
+      <h2>Developer & Database Settings</h2>
+      <p class="settings-desc">Configure your API key and Supabase database connection details below.</p>
+      
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem;">
+        <label for="api-key-input">Gemini API Key</label>
+        <div class="password-input-container">
+          <input type="password" id="api-key-input" placeholder="Paste your API key starting with AQ.Ab..." class="form-control">
+          <button id="toggle-key-visibility" class="icon-btn"><i data-lucide="eye"></i></button>
+        </div>
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem;">
+        <label for="supabase-url-input">Supabase Project URL</label>
+        <input type="text" id="supabase-url-input" placeholder="https://your-project.supabase.co" class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.5rem;">
+        <label for="supabase-anon-key-input">Supabase Public Anon Key</label>
+        <input type="password" id="supabase-anon-key-input" placeholder="eyJhbGciOi..." class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
+      </div>
+      
+      <div class="settings-help">
+        <h3>How to get these values:</h3>
+        <ol>
+          <li>Go to your <a href="https://supabase.com/" target="_blank" class="text-link">Supabase Dashboard <i data-lucide="external-link" class="inline-icon"></i></a>.</li>
+          <li>Navigate to <strong>Project Settings</strong> > <strong>API</strong>.</li>
+          <li>Copy the <strong>Project URL</strong> and <strong>Anon Public Key</strong>.</li>
+        </ol>
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancel-settings" class="btn btn-secondary">Cancel</button>
+        <button id="save-settings" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Paywall Modal (Subscription Upgrade Prompt) -->
+  <div id="paywall-modal" class="modal hidden">
+    <div class="modal-overlay" id="paywall-overlay"></div>
+    <div class="modal-content glass-panel paywall-content">
+      <button class="icon-btn modal-close" id="close-paywall-modal"><i data-lucide="x"></i></button>
+      
+      <div class="paywall-header">
+        <div class="paywall-badge"><i data-lucide="crown"></i> PREMIUM</div>
+        <h2>Unlock Your Master Kitchen</h2>
+        <p>Take cooking, planning, and waste management to the next level.</p>
+      </div>
+
+      <div class="paywall-features">
+        <div class="pw-feature">
+          <div class="pw-feature-icon-container"><i data-lucide="sparkles"></i></div>
+          <div class="pw-feature-text">
+            <h4>Unlimited AI Recipe Generations</h4>
+            <p>Never run out of recipe ideas. Bypass the 3 daily limits completely.</p>
+          </div>
+        </div>
+        
+        <div class="pw-feature">
+          <div class="pw-feature-icon-container"><i data-lucide="aperture"></i></div>
+          <div class="pw-feature-text">
+            <h4>Smart Fridge Vision Scanning</h4>
+            <p>Instantly extract ingredients by taking a photo of your fridge or pantry.</p>
+          </div>
+        </div>
+
+        <div class="pw-feature">
+          <div class="pw-feature-icon-container"><i data-lucide="clock"></i></div>
+          <div class="pw-feature-text">
+            <h4>Interactive Kitchen Timers</h4>
+            <p>One-click timers integrated directly inside the instructions so you never burn a meal.</p>
+          </div>
+        </div>
+
+        <div class="pw-feature">
+          <div class="pw-feature-icon-container"><i data-lucide="shopping-basket"></i></div>
+          <div class="pw-feature-text">
+            <h4>Aisle-Categorized Shopping Lists</h4>
+            <p>Instantly compile missing ingredients into lists organized by store departments.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="paywall-pricing">
+        <div class="pricing-label">PRO ACCESS PLAN</div>
+        <div class="price-row">
+          <span class="price-value">$4.99</span>
+          <span class="price-period">/ month</span>
+        </div>
+        <p class="pricing-subtext">Save over $50/month in food waste alone.</p>
+      </div>
+
+      <button id="paywall-checkout-btn" class="btn btn-accent btn-block">
+        <i data-lucide="party-popper"></i> Upgrade to Premium Now
+      </button>
+      <p class="checkout-footer-notes">Securely processed by Stripe. Cancel anytime in one click.</p>
+    </div>
+  </div>
+
+  <!-- Shopping List Modal -->
+  <div id="shopping-modal" class="modal hidden">
+    <div class="modal-overlay" id="shopping-overlay"></div>
+    <div class="modal-content glass-panel shopping-content">
+      <button class="icon-btn modal-close" id="close-shopping-modal"><i data-lucide="x"></i></button>
+      
+      <div class="shopping-header">
+        <i data-lucide="shopping-bag" class="shopping-title-icon"></i>
+        <h2>Feast Shopping List</h2>
+        <p>Cross off missing items organized by supermarket section.</p>
+      </div>
+
+      <div id="shopping-list-categories" class="shopping-list-body">
+        <!-- Dynamically Populated categories -->
+      </div>
+
+      <div class="modal-actions shopping-actions">
+        <button id="copy-shopping-btn" class="btn btn-secondary"><i data-lucide="clipboard"></i> Copy Text List</button>
+        <button id="close-shopping-btn-action" class="btn btn-primary">Done Shopping</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plating Guide Modal -->
+  <div id="plating-modal" class="modal hidden">
+    <div class="modal-overlay" id="plating-overlay-bg"></div>
+    <div class="modal-content glass-panel plating-content">
+      <button class="icon-btn modal-close" id="close-plating-modal"><i data-lucide="x"></i></button>
+      <div class="plating-header">
+        <i data-lucide="utensils" class="plating-title-icon"></i>
+        <h2>Michelin Plating Guide</h2>
+        <p>Chef's layout, garnishing, and visual aesthetics for this dish.</p>
+      </div>
+      <div class="plating-body" id="plating-body-content">
+        <!-- Dynamic plating instructions -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Ingredient Swap Modal -->
+  <div id="swap-modal" class="modal hidden">
+    <div class="modal-overlay" id="swap-overlay-bg"></div>
+    <div class="modal-content glass-panel swap-content-modal">
+      <button class="icon-btn modal-close" id="close-swap-modal"><i data-lucide="x"></i></button>
+      <h2>Substitute Ingredient</h2>
+      <p class="swap-desc">Select or type an ingredient to replace <span id="swap-target-name" class="text-accent"></span>.</p>
+      
+      <!-- Smart Substitutes Directory Grid -->
+      <div id="smart-swaps-container" class="hidden" style="margin-bottom: 1.25rem; background: rgba(255,255,255,0.02); padding: 0.75rem; border-radius: var(--radius-sm); border: 1px dashed var(--border-color);">
+        <div style="font-size:0.7rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:0.5rem; letter-spacing:0.05em;">💡 Smart Substitutes (Match %)</div>
+        <div id="smart-swaps-list" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <!-- Populated dynamically in app.js -->
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="swap-input">Substitute With</label>
+        <input type="text" id="swap-input" placeholder="e.g., zucchini, tofu, beef">
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancel-swap" class="btn btn-secondary">Cancel</button>
+        <button id="confirm-swap" class="btn btn-accent"><i data-lucide="git-compare"></i> Recalculate Recipe</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Authentication Modal -->
+  <div id="auth-modal" class="modal hidden">
+    <div class="modal-overlay" id="auth-overlay-bg"></div>
+    <div class="modal-content glass-panel settings-content">
+      <button class="icon-btn modal-close" id="close-auth-modal"><i data-lucide="x"></i></button>
+      
+      <div class="panel-header">
+        <i data-lucide="chef-hat" class="logo-icon text-gradient" style="margin: 0 auto 1rem; width: 3rem; height: 3rem;"></i>
+        <h2 id="auth-modal-title" style="text-align: center; margin-bottom: 0.25rem;">Sign In to Feast</h2>
+        <p id="auth-modal-subtitle" style="text-align: center; font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1.5rem;">Save recipes, plan your meals, and unlock premium kitchen features.</p>
+      </div>
+
+      <form id="auth-form" class="settings-form" style="display: flex; flex-direction: column; gap: 1rem;">
+        <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+          <label for="auth-email">Email Address</label>
+          <input type="email" id="auth-email" required placeholder="chef@example.com" class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
+        </div>
+        <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+          <label for="auth-password">Password</label>
+          <input type="password" id="auth-password" required placeholder="••••••••" minlength="6" class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
+        </div>
+        
+        <div id="auth-error-message" class="auth-error hidden" style="color: var(--card-badge-expiring-color); font-size: 0.875rem; background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.2); padding: 0.5rem; border-radius: 6px; text-align: center;"></div>
+
+        <button type="submit" id="auth-submit-btn" class="btn btn-accent btn-block" style="margin-top: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+          Sign In
+        </button>
+      </form>
+
+      <div class="auth-toggle-container" style="text-align: center; margin-top: 1.5rem; font-size: 0.875rem; color: var(--text-secondary);">
+        <span id="auth-toggle-text">Don't have an account?</span>
+        <button id="auth-toggle-btn" class="text-link" style="background: none; border: none; color: var(--accent-color); cursor: pointer; text-decoration: underline; font-weight: 500; padding: 0 0.25rem;">Sign Up</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <p>&copy; 2026 Fridge-to-Feast. Powered by Google Gemini. Crafted with 💖 for fine dining.</p>
+  </footer>
+
+  <!-- App JavaScript -->
+  <script src="app.min.js?v=1783262077"></script>
+</body>
+</html>
