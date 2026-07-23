@@ -2511,7 +2511,7 @@ footer {
    ========================================== */
 @media (max-width: 768px) {
   :root {
-    font-size: 14px; /* Zoom out the layout proportionally! */
+    font-size: 12px; /* Zoom out the layout proportionally! */
   }
   
   header {
@@ -2548,7 +2548,7 @@ footer {
 
 @media (max-width: 480px) {
   :root {
-    font-size: 13px; /* Zoom out even more for small phones! */
+    font-size: 11px; /* Zoom out even more for small phones! */
   }
   
   .logo {
