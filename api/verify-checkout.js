@@ -1,5 +1,4 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { createClient } = require('@supabase/supabase-js');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -33,20 +32,27 @@ module.exports = async (req, res) => {
     if (session.payment_status === 'paid') {
       const userId = session.client_reference_id;
       
-      // 2. Initialize Supabase Client
-      const supabase = createClient(supabaseUrl, supabaseKey);
+      // 2. Update user profile to premium using Supabase REST API (zero dependencies)
+      const patchRes = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Prefer': 'return=representation'
+        },
+        body: JSON.stringify({ is_premium: true })
+      });
 
-      // 3. Update user profile to premium
-      const { data, error } = await supabase
-        .from('profiles')
-        .update({ is_premium: true })
-        .eq('id', userId)
-        .select()
-        .single();
+      if (!patchRes.ok) {
+        const errText = await patchRes.text();
+        throw new Error(`Supabase REST error: ${patchRes.status} - ${errText}`);
+      }
 
-      if (error) throw error;
+      const updatedProfiles = await patchRes.json();
+      const profile = Array.isArray(updatedProfiles) ? updatedProfiles[0] : updatedProfiles;
 
-      return res.status(200).json({ success: true, profile: data });
+      return res.status(200).json({ success: true, profile });
     } else {
       return res.status(400).json({ success: false, error: "Payment not completed." });
     }
