@@ -11,6 +11,6 @@ module.exports = async (req, res) => {
     status: 'healthy',
     mode: 'production',
     geminiConfigured: !!process.env.GEMINI_API_KEY,
-    stripeConfigured: false
+    stripeConfigured: !!process.env.STRIPE_SECRET_KEY && !!process.env.STRIPE_PRICE_ID
   });
 };
