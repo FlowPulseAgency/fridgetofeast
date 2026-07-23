@@ -2612,8 +2612,8 @@ footer {
   .header-settings-btn {
     font-size: 0 !important;
     padding: 0 !important;
-    width: 1.85rem !important;
-    height: 1.85rem !important;
+    width: 2rem !important;
+    height: 2rem !important;
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -2621,11 +2621,17 @@ footer {
   }
   
   .header-premium-btn i,
+  .header-premium-btn svg,
   .header-auth-btn i,
-  .header-settings-btn i {
+  .header-auth-btn svg,
+  .header-settings-btn i,
+  .header-settings-btn svg {
     margin: 0 !important;
-    width: 0.95rem !important;
-    height: 0.95rem !important;
+    width: 1.1rem !important;
+    height: 1.1rem !important;
+    font-size: 1rem !important;
+    color: #fff !important;
+    stroke: #fff !important;
   }
   
   .main-nav {

@@ -12,7 +12,7 @@
   <!-- FontAwesome Icons (for agency logo) -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- CSS Stylesheet -->
-  <link rel="stylesheet" href="style.css?v=1783262086">
+  <link rel="stylesheet" href="style.css?v=1783262087">
   <!-- Lucide Icons (CDN) -->
   <script src="https://unpkg.com/lucide@latest"></script>
   <!-- Supabase Client JS -->
@@ -780,38 +780,46 @@
     <div class="modal-overlay" id="settings-overlay"></div>
     <div class="modal-content glass-panel settings-content">
       <button class="icon-btn modal-close" id="close-settings-modal"><i data-lucide="x"></i></button>
-      <h2>Developer & Database Settings</h2>
-      <p class="settings-desc">Configure your API key and Supabase database connection details below.</p>
+      <h2>App Information & System Settings</h2>
+      <p class="settings-desc">System preferences and cloud backend status for FridgeToFeast.</p>
       
-      <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem;">
-        <label for="api-key-input">Gemini API Key</label>
-        <div class="password-input-container">
-          <input type="password" id="api-key-input" placeholder="Paste your API key starting with AQ.Ab..." class="form-control">
-          <button id="toggle-key-visibility" class="icon-btn"><i data-lucide="eye"></i></button>
+      <!-- Hosted Server Status Banner -->
+      <div id="hosted-status-box" style="background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--success); font-weight: 600; margin-bottom: 0.25rem;">
+          <i data-lucide="check-circle-2" style="width: 1.1rem; height: 1.1rem;"></i> Live Cloud Backend Connected
+        </div>
+        <p style="font-size: 0.825rem; color: var(--text-secondary); margin: 0; line-height: 1.4;">Your app is running on Vercel production servers. All AI generation, image vision scanning, and database syncing are handled securely in the cloud.</p>
+      </div>
+
+      <!-- Advanced Developer Config (Collapsible) -->
+      <div style="margin-top: 1rem; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+        <button type="button" id="toggle-dev-settings-btn" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; padding: 0;">
+          <i data-lucide="chevron-right" id="dev-settings-chevron" style="width: 1rem; height: 1rem;"></i> Advanced Developer Overrides
+        </button>
+
+        <div id="dev-settings-container" class="hidden" style="margin-top: 1rem;">
+          <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem;">
+            <label for="api-key-input">Gemini API Key Override</label>
+            <div class="password-input-container">
+              <input type="password" id="api-key-input" placeholder="Paste your API key starting with AQ.Ab..." class="form-control">
+              <button id="toggle-key-visibility" class="icon-btn"><i data-lucide="eye"></i></button>
+            </div>
+          </div>
+
+          <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem;">
+            <label for="supabase-url-input">Supabase Project URL</label>
+            <input type="text" id="supabase-url-input" placeholder="https://your-project.supabase.co" class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
+          </div>
+
+          <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.5rem;">
+            <label for="supabase-anon-key-input">Supabase Public Anon Key</label>
+            <input type="password" id="supabase-anon-key-input" placeholder="eyJhbGciOi..." class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
+          </div>
         </div>
       </div>
 
-      <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem;">
-        <label for="supabase-url-input">Supabase Project URL</label>
-        <input type="text" id="supabase-url-input" placeholder="https://your-project.supabase.co" class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
-      </div>
-
-      <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.5rem;">
-        <label for="supabase-anon-key-input">Supabase Public Anon Key</label>
-        <input type="password" id="supabase-anon-key-input" placeholder="eyJhbGciOi..." class="form-control" style="background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.75rem; border-radius: 8px;">
-      </div>
-      
-      <div class="settings-help">
-        <h3>How to get these values:</h3>
-        <ol>
-          <li>Go to your <a href="https://supabase.com/" target="_blank" class="text-link">Supabase Dashboard <i data-lucide="external-link" class="inline-icon"></i></a>.</li>
-          <li>Navigate to <strong>Project Settings</strong> > <strong>API</strong>.</li>
-          <li>Copy the <strong>Project URL</strong> and <strong>Anon Public Key</strong>.</li>
-        </ol>
-      </div>
-
-      <div class="modal-actions">
-        <button id="cancel-settings" class="btn btn-secondary">Cancel</button>
+      <div class="modal-actions" style="margin-top: 1.5rem;">
+        <button id="cancel-settings" class="btn btn-secondary">Close</button>
         <button id="save-settings" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
@@ -998,6 +1006,6 @@
   </footer>
 
   <!-- App JavaScript -->
-  <script src="app.min.js?v=1783262089"></script>
+  <script src="app.min.js?v=1783262090"></script>
 </body>
 </html>
