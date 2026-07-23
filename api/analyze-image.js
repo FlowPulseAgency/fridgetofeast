@@ -80,7 +80,7 @@ module.exports = async (req, res) => {
           {
             parts: [
               {
-                text: "Identify only the specific cooking ingredients you are highly confident about in this image. Do not guess generic food categories (such as 'grains', 'spices', or 'leftovers') or guess items that are blurry or partially hidden. If you are not completely sure about an item, omit it and do not list it. Return the results strictly as a JSON array of strings containing the item names, for example: [\"tomato\", \"cheese\", \"bell pepper\"]. Do not include markdown code block formatting or backticks. Return nothing but the JSON array."
+                text: "Identify all specific cooking ingredients in this image. Split your response into: 1) ingredients you are highly confident about, and 2) items you see but are unsure about (e.g. blurry, partially hidden, or ambiguous). For the unsure items, describe their visual appearance and location, and write a helpful question asking the user to identify it (e.g. 'I see a red round item next to the milk. What is this item?'). Return strictly a JSON object conforming to the requested schema."
               },
               {
                 inlineData: {
@@ -92,7 +92,29 @@ module.exports = async (req, res) => {
           }
         ],
         generationConfig: {
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              ingredients: {
+                type: "ARRAY",
+                items: { type: "STRING" }
+              },
+              clarifications: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    visualAppearance: { type: "STRING" },
+                    location: { type: "STRING" },
+                    question: { type: "STRING" }
+                  },
+                  required: ["visualAppearance", "location", "question"]
+                }
+              }
+            },
+            required: ["ingredients", "clarifications"]
+          }
         }
       })
     });
